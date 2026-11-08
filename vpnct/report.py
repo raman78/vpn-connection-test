@@ -1,0 +1,210 @@
+"""Summarise one or more sessions: each path side by side.
+
+Connections are grouped by (program, remote port, path). The remote port
+stands for the service — a game talks to several servers for different
+purposes, and its main server's numbers must not be averaged with a
+telemetry endpoint's. The path is the interface plus the VPN server name,
+so every VPN server is its own column.
+
+Numbers and where they come from:
+- RTT p50/p95: kernel RTT (`samples.csv`), only seconds in which data arrived
+  (the kernel updates RTT only on traffic);
+- loss: retransmissions by the remote end per captured data packet
+  (`losses.csv`), and per minute of capture; gaps alongside;
+- probes and hops: ping results per target and path (`probes.csv`,
+  `hops.csv`). A hop that drops pings while later hops do not is rate
+  limiting its own replies, not losing traffic — read hop loss together with
+  the hops after it.
+"""
+
+from __future__ import annotations
+
+import csv
+import statistics
+from collections import defaultdict
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def _read(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    with open(path, newline="") as fh:
+        return list(csv.DictReader(fh))
+
+
+def _f(value: str) -> float | None:
+    return float(value) if value not in ("", None) else None
+
+
+def _port(endpoint: str) -> str:
+    return endpoint.rpartition(":")[2]
+
+
+def percentile(values: list[float], q: float) -> float | None:
+    if not values:
+        return None
+    values = sorted(values)
+    k = (len(values) - 1) * q
+    lo, hi = int(k), min(int(k) + 1, len(values) - 1)
+    return values[lo] + (values[hi] - values[lo]) * (k - lo)
+
+
+@dataclass
+class Group:
+    """Times are wall-clock: several parallel connections in one group count
+    each second (and each captured minute) once, not once per connection."""
+    stamps: set = field(default_factory=set)            # (session, sample time)
+    coverage: dict = field(default_factory=dict)        # (session, minute, interface) -> covered_s
+    seconds_with_data: int = 0
+    rtts: list = field(default_factory=list)
+    connections: set = field(default_factory=set)
+    data_pkts: int = 0
+    lost_gaps: int = 0
+    retrans: int = 0
+    worst_minute_pct: float = 0.0
+
+    @property
+    def seconds(self) -> int:
+        return len(self.stamps)
+
+    @property
+    def covered_s(self) -> float:
+        return sum(self.coverage.values())
+
+
+@dataclass
+class ProbeGroup:
+    rounds: int = 0
+    losses: list = field(default_factory=list)
+    rtts: list = field(default_factory=list)
+    errors: list = field(default_factory=list)
+    replies: int = 0          # rounds in which at least one reply came back
+
+    @property
+    def never_answers(self) -> bool:
+        """Every completed round got nothing back: the target does not answer
+        ping at all. That is not packet loss and must not read as 100 %."""
+        return bool(self.losses) and self.replies == 0
+
+
+def summarise(session_dirs: list[Path]) -> dict:
+    groups: dict[tuple, Group] = defaultdict(Group)
+    probe_groups: dict[tuple, ProbeGroup] = defaultdict(ProbeGroup)
+    hop_groups: dict[tuple, ProbeGroup] = defaultdict(ProbeGroup)
+    marks: list[str] = []
+    for d in session_dirs:
+        for r in _read(d / "samples.csv"):
+            g = groups[(r["program"], _port(r["remote"]), r["path"])]
+            g.stamps.add((d.name, r["time"]))
+            g.connections.add((d.name, r["local"], r["remote"]))
+            if int(r["d_data_segs_in"] or 0) > 0:
+                g.seconds_with_data += 1
+                rtt = _f(r["rtt_ms"])
+                if rtt is not None:
+                    g.rtts.append(rtt)
+        for r in _read(d / "losses.csv"):
+            g = groups[(r["program"], _port(r["remote"]), r["path"])]
+            ck = (d.name, r["minute"], r["interface"])
+            g.coverage[ck] = max(g.coverage.get(ck, 0.0), float(r["covered_s"]))
+            data, gaps, rtx = int(r["data_pkts"]), int(r["lost_gaps"]), int(r["retrans"])
+            g.data_pkts += data
+            g.lost_gaps += gaps
+            g.retrans += rtx
+            if data >= 50:
+                g.worst_minute_pct = max(g.worst_minute_pct, 100.0 * rtx / data)
+        for r in _read(d / "probes.csv"):
+            key = (r["target"], r["role"], r["path"], r["bound"])
+            pg = probe_groups[key]
+            pg.rounds += 1
+            if r["error"]:
+                pg.errors.append(r["error"])
+            else:
+                if _f(r["loss_pct"]) is not None:
+                    pg.losses.append(float(r["loss_pct"]))
+                    pg.replies += int(r["received"] or 0) > 0
+                if _f(r["rtt_avg"]) is not None:
+                    pg.rtts.append(float(r["rtt_avg"]))
+        for r in _read(d / "hops.csv"):
+            if not r["hop"]:
+                continue
+            hg = hop_groups[(r["path"], r["target"], int(r["hop"]), r["address"])]
+            hg.rounds += 1
+            if r["error"]:
+                hg.errors.append(r["error"])
+            elif _f(r["loss_pct"]) is not None:
+                hg.losses.append(float(r["loss_pct"]))
+                hg.replies += int(r["received"] or 0) > 0
+                if _f(r["rtt_avg"]) is not None:
+                    hg.rtts.append(float(r["rtt_avg"]))
+        events = d / "events.log"
+        if events.exists():
+            marks += [line.rstrip() for line in events.read_text().splitlines() if " mark " in line]
+    return {"groups": groups, "probes": probe_groups, "hops": hop_groups, "marks": marks}
+
+
+def _n(v: float | None, fmt: str = "{:.1f}") -> str:
+    return "-" if v is None else fmt.format(v)
+
+
+def format_report(summary: dict) -> str:
+    out = []
+    groups = summary["groups"]
+    out.append("CONNECTIONS (program, remote port, path)")
+    header = (f"{'program':<20} {'port':>6}  {'path':<36} {'time':>7} {'conns':>5} "
+              f"{'RTT p50':>8} {'RTT p95':>8} {'captured':>9} {'data pkts':>9} "
+              f"{'retrans':>7} {'loss %':>7} {'rtx/min':>7} {'gaps':>5} {'worst min %':>11}")
+    out.append(header)
+    out.append("-" * len(header))
+    for (program, port, path), g in sorted(groups.items()):
+        minutes = g.covered_s / 60
+        loss = 100.0 * g.retrans / g.data_pkts if g.data_pkts else None
+        per_min = g.retrans / minutes if minutes else None
+        out.append(
+            f"{program[:20]:<20} {port:>6}  {path[:36]:<36} {g.seconds / 60:>6.1f}m {len(g.connections):>5} "
+            f"{_n(percentile(g.rtts, .5)):>8} {_n(percentile(g.rtts, .95)):>8} "
+            f"{minutes:>8.1f}m {g.data_pkts:>9} {g.retrans:>7} {_n(loss, '{:.2f}'):>7} "
+            f"{_n(per_min, '{:.2f}'):>7} {g.lost_gaps:>5} {g.worst_minute_pct:>11.1f}")
+    if not groups:
+        out.append("(no watched connections recorded)")
+    out.append("")
+    out.append("PROBES (ping; 'bound' = sent through that interface explicitly)")
+    header = (f"{'target':<18} {'role':<22} {'path':<36} {'bound':>5} {'rounds':>6} "
+              f"{'loss avg':>8} {'loss max':>8} {'RTT med':>8}  errors")
+    out.append(header)
+    out.append("-" * len(header))
+    for (target, role, path, bound), pg in sorted(summary["probes"].items()):
+        err = f"{len(pg.errors)}: {pg.errors[-1]}" if pg.errors else ""
+        if pg.never_answers:
+            out.append(f"{target:<18} {role[:22]:<22} {path[:36]:<36} {bound:>5} {pg.rounds:>6} "
+                       f"{'does not answer ping':>26}  {err}")
+            continue
+        out.append(
+            f"{target:<18} {role[:22]:<22} {path[:36]:<36} {bound:>5} {pg.rounds:>6} "
+            f"{_n(statistics.fmean(pg.losses) if pg.losses else None):>8} "
+            f"{_n(max(pg.losses) if pg.losses else None):>8} "
+            f"{_n(statistics.median(pg.rtts) if pg.rtts else None):>8}  {err}")
+    out.append("")
+    out.append("ROUTE HOPS (ping per hop; loss that continues to the last hop is real,")
+    out.append("loss at one hop only is that router limiting its replies)")
+    last = None
+    for (path, target, hop, address), hg in sorted(summary["hops"].items()):
+        if (path, target) != last:
+            out.append(f"  {target} over {path}")
+            last = (path, target)
+        loss = statistics.fmean(hg.losses) if hg.losses else None
+        if not hg.losses and hg.errors:
+            out.append(f"    {hop:>2}  {address or '(no reply)':<18} rounds {hg.rounds:>3}  {hg.errors[-1]}")
+            continue
+        if hg.never_answers:
+            out.append(f"    {hop:>2}  {address:<18} rounds {hg.rounds:>3}  does not answer ping")
+            continue
+        out.append(f"    {hop:>2}  {address or '(no reply)':<18} rounds {hg.rounds:>3}  "
+                   f"loss avg {_n(loss):>5} %  max {_n(max(hg.losses) if hg.losses else None):>5} %  "
+                   f"RTT {_n(statistics.median(hg.rtts) if hg.rtts else None):>6} ms"
+                   + (f"  errors {len(hg.errors)}" if hg.errors else ""))
+    if summary["marks"]:
+        out.append("")
+        out.append("MARKS ('it stutters now')")
+        out += [f"  {m}" for m in summary["marks"]]
+    return "\n".join(out)

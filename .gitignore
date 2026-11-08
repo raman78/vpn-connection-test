@@ -1,0 +1,9 @@
+# Private notes: personal network details, Polish, never committed.
+notes/
+
+# Packet captures contain game chat; they must never be kept or committed.
+*.pcap
+*.pcapng
+
+__pycache__/
+*.pyc
