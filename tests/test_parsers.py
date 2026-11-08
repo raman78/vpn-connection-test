@@ -175,3 +175,20 @@ class SerialPerPathTests(unittest.TestCase):
         self.assertEqual(results, jobs)
         self.assertEqual(peak, {"vpn": 1, "direct": 1})
         self.assertEqual(overall["peak"], 2)
+
+
+class SerialStopTests(unittest.TestCase):
+    def test_stop_leaves_unstarted_jobs_out(self):
+        import threading
+        from vpnct.probes import run_serial_per_path
+        stop = threading.Event()
+        done = []
+
+        def run(job):
+            done.append(job)
+            stop.set()                       # stop requested during the first job
+            return job
+
+        results = run_serial_per_path([1, 2, 3], lambda j: "vpn", run, stop=stop)
+        self.assertEqual(done, [1])
+        self.assertEqual(results, [1, None, None])

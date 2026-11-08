@@ -143,6 +143,58 @@ def summarise(session_dirs: list[Path]) -> dict:
     return {"groups": groups, "probes": probe_groups, "hops": hop_groups, "marks": marks}
 
 
+MIN_MINUTES_FOR_VERDICT = 5.0
+LOSS_NOTICEABLE_PCT = 0.5
+
+
+def loss_pct(g: Group) -> float | None:
+    return 100.0 * g.retrans / g.data_pkts if g.data_pkts else None
+
+
+def compare_paths(paths: dict[str, Group]) -> list[str]:
+    """Plain statements comparing each VPN path of one service with its
+    direct path(s). Says "not enough data" rather than judging a path that
+    was captured for less than MIN_MINUTES_FOR_VERDICT minutes."""
+    direct = {p: g for p, g in paths.items() if p.startswith("direct:")}
+    vpn = {p: g for p, g in paths.items() if p.startswith("vpn:")}
+    lines = []
+    short = [p for p, g in paths.items() if g.covered_s / 60 < MIN_MINUTES_FOR_VERDICT]
+    for p in short:
+        lines.append(f"{p}: not enough data yet ({paths[p].covered_s / 60:.1f} of "
+                     f"{MIN_MINUTES_FOR_VERDICT:.0f} captured minutes)")
+    if not direct or not vpn:
+        missing = "direct" if not direct else "VPN"
+        lines.append(f"no {missing} path recorded for this service yet; nothing to compare")
+        return lines
+    for dp, dg in direct.items():
+        for vp, vg in vpn.items():
+            if dp in short or vp in short:
+                continue
+            dl, vl = loss_pct(dg), loss_pct(vg)
+            drtt, vrtt = percentile(dg.rtts, .5), percentile(vg.rtts, .5)
+            extra = (f"{vrtt - drtt:+.0f} ms" if drtt is not None and vrtt is not None else "unknown")
+            if dl is None or vl is None:
+                lines.append(f"{vp} vs {dp}: no captured data packets on one side")
+            elif dl >= LOSS_NOTICEABLE_PCT and vl < dl / 4:
+                lines.append(f"{vp} vs {dp}: VPN reduces loss {dl:.2f}% -> {vl:.2f}%, RTT {extra}")
+            elif dl < LOSS_NOTICEABLE_PCT and vl < LOSS_NOTICEABLE_PCT:
+                lines.append(f"{vp} vs {dp}: little loss on either ({dl:.2f}% / {vl:.2f}%); "
+                             f"VPN costs RTT {extra} for no gain in this data")
+            elif vl > dl:
+                lines.append(f"{vp} vs {dp}: VPN loses more ({vl:.2f}% vs {dl:.2f}%), RTT {extra}")
+            else:
+                lines.append(f"{vp} vs {dp}: loss {dl:.2f}% direct, {vl:.2f}% VPN, RTT {extra}")
+    return lines
+
+
+def by_service(groups: dict) -> dict[tuple[str, str], dict[str, Group]]:
+    """(program, port) -> {path: Group}."""
+    out: dict[tuple[str, str], dict[str, Group]] = defaultdict(dict)
+    for (program, port, path), g in groups.items():
+        out[(program, port)][path] = g
+    return out
+
+
 def _n(v: float | None, fmt: str = "{:.1f}") -> str:
     return "-" if v is None else fmt.format(v)
 
@@ -167,6 +219,13 @@ def format_report(summary: dict) -> str:
             f"{_n(per_min, '{:.2f}'):>7} {g.lost_gaps:>5} {g.worst_minute_pct:>11.1f}")
     if not groups:
         out.append("(no watched connections recorded)")
+    out.append("")
+    out.append("COMPARISON")
+    for (program, port), paths in sorted(by_service(groups).items()):
+        if sum(g.data_pkts for g in paths.values()) == 0:
+            continue
+        out.append(f"  {program} :{port}")
+        out += [f"    {line}" for line in compare_paths(paths)]
     out.append("")
     out.append("PROBES (ping; 'bound' = sent through that interface explicitly)")
     header = (f"{'target':<18} {'role':<22} {'path':<36} {'bound':>5} {'rounds':>6} "

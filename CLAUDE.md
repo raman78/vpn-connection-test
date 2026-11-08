@@ -16,7 +16,11 @@ which runs Questlog and since 0.3.0 captures through a VPN too); not part of it.
 | test plan, everything already known, what a session must not do | `notes/07-vpn-test-polaczenia-plan.md` (private, Polish, not in git) |
 | measuring method and the 17 Oct 2026 loss findings (where packets are lost) | `notes/06-siec-diagnostyka.md` (private, Polish, not in git) |
 
-Code: package `vpnct/` (command `vpnct`), Python standard library only.
+Code: package `vpnct/` (commands `vpnct`, `vpnct-gui`); the recorder is
+standard library only, PyQt6 only in `vpnct/gui.py`. Installed here with
+`pipx install --editable .`; menu entry by `vpnct install-desktop`.
+Test the window offscreen (`QT_QPA_PLATFORM=offscreen`, `XDG_DATA_HOME` in
+a temporary directory) so it takes no focus and leaves no real session.
 Tests: `python3 -m unittest` in the repository root. A change to the code is
 not finished until `docs/ARCHITECTURE.md` (and `README.md` where users see
 it) match it, in the same commit.

@@ -111,8 +111,9 @@ def parse_tracepath(stdout: str) -> list[Hop]:
     return [hops[n] for n in sorted(hops)]
 
 
-def trace_route(target: str) -> tuple[list[Hop], str | None]:
-    """Hops to the target, each answering hop pinged in parallel."""
+def trace_route(target: str, stop=None) -> tuple[list[Hop], str | None]:
+    """Hops to the target, each answering hop pinged one at a time.
+    `stop` (a threading.Event) ends the hop pings early when set."""
     try:
         r = subprocess.run(["tracepath", "-n", "-m", str(TRACE_MAX_HOPS), target],
                            capture_output=True, text=True, timeout=TRACE_MAX_HOPS * 4 + 10)
@@ -124,12 +125,14 @@ def trace_route(target: str) -> tuple[list[Hop], str | None]:
     # One hop at a time: the route usually runs through a VPN tunnel when
     # one is up, and ICMP through a tunnel can be rate limited per client.
     for hop in hops:
+        if stop is not None and stop.is_set():
+            break
         if hop.address:
             hop.ping = ping(hop.address)
     return hops, None
 
 
-def run_serial_per_path(jobs: list, path_of, run) -> list:
+def run_serial_per_path(jobs: list, path_of, run, stop=None) -> list:
     """Run `run(job)` for every job; jobs on the same path (`path_of(job)`)
     one after another, different paths in parallel. Results keep job order.
 
@@ -137,7 +140,10 @@ def run_serial_per_path(jobs: list, path_of, run) -> list:
     2026-11-08 on a Proton free server, one ping stream at 5/s lost nothing,
     two at once lost 85 %, eight lost 95-100 %, while the direct path took
     thirty at once. Parallel pings over one tunnel would measure the probe,
-    not the path."""
+    not the path.
+
+    When `stop` (a threading.Event) is set, jobs not yet started are left
+    out: their result stays None."""
     groups: dict[str, list[int]] = {}
     for i, job in enumerate(jobs):
         groups.setdefault(path_of(job), []).append(i)
@@ -145,6 +151,8 @@ def run_serial_per_path(jobs: list, path_of, run) -> list:
 
     def work(indices: list[int]) -> None:
         for i in indices:
+            if stop is not None and stop.is_set():
+                return
             results[i] = run(jobs[i])
 
     with ThreadPoolExecutor(max_workers=max(1, len(groups))) as pool:

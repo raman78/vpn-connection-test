@@ -19,14 +19,38 @@ def _pidfile() -> Path:
     return Path(base) / "vpn-connection-test.pid"
 
 
+def running_recorder() -> int | None:
+    """Pid of a recorder that is already running (terminal or window), if any."""
+    try:
+        pid = int(_pidfile().read_text())
+        os.kill(pid, 0)
+    except (OSError, ValueError):
+        return None
+    return pid
+
+
+def claim_pidfile() -> None:
+    """One recorder at a time: two would ping through the same tunnel at
+    once, which a VPN server's ICMP limit turns into false loss."""
+    pid = running_recorder()
+    if pid is not None and pid != os.getpid():
+        raise SystemExit(f"a recorder is already running (pid {pid}); "
+                         f"use 'vpnct mark' or its window instead of a second one")
+    _pidfile().write_text(str(os.getpid()))
+
+
+def release_pidfile() -> None:
+    if running_recorder() == os.getpid():
+        _pidfile().unlink(missing_ok=True)
+
+
 def cmd_record(args) -> int:
     from .engine import Engine
     from .tracker import Selection
 
+    claim_pidfile()
     engine = Engine(Selection(args.program, args.port),
                     extra_targets=args.target if args.target else None)
-    pidfile = _pidfile()
-    pidfile.write_text(str(os.getpid()))
     signal.signal(MARK_SIGNAL, lambda *_: engine.mark("mark requested from the command line"))
     signal.signal(signal.SIGTERM, lambda *_: engine.stop())
     try:
@@ -38,7 +62,7 @@ def cmd_record(args) -> int:
     except KeyboardInterrupt:
         engine.stop()
     finally:
-        pidfile.unlink(missing_ok=True)
+        release_pidfile()
     print(f"session: {engine.session.dir}")
     return 0
 
@@ -59,13 +83,11 @@ def _print_status(snap) -> None:
 
 
 def cmd_mark(args) -> int:
-    pidfile = _pidfile()
-    try:
-        pid = int(pidfile.read_text())
-        os.kill(pid, MARK_SIGNAL)
-    except (OSError, ValueError) as exc:
-        print(f"no recording is running ({pidfile}: {exc})", file=sys.stderr)
+    pid = running_recorder()
+    if pid is None:
+        print(f"no recording is running (no live pid in {_pidfile()})", file=sys.stderr)
         return 1
+    os.kill(pid, MARK_SIGNAL)
     print(f"mark sent to recorder pid {pid}")
     return 0
 
@@ -104,6 +126,42 @@ def cmd_sessions(args) -> int:
     return 0
 
 
+DESKTOP_FILE = "vpn-connection-test.desktop"
+
+
+def desktop_entry(exec_cmd: str, icon: Path) -> str:
+    return (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=VPN connection test\n"
+        "Comment=Compare direct and VPN paths: RTT, loss, route\n"
+        f"Exec={exec_cmd}\n"
+        f"Icon={icon}\n"
+        "Terminal=false\n"
+        "Categories=Network;Monitor;\n"
+        "StartupNotify=false\n"
+    )
+
+
+def cmd_install_desktop(args) -> int:
+    """Write the menu entry that starts the tray program. It points at this
+    installation: the `vpnct-gui` command if it is on PATH, else this
+    interpreter with `-m vpnct.gui`."""
+    import shutil
+    gui = shutil.which("vpnct-gui")
+    exec_cmd = gui if gui else f"{sys.executable} -m vpnct.gui"
+    icon = Path(__file__).with_name("icon.svg")
+    base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    target = Path(base) / "applications" / DESKTOP_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(desktop_entry(exec_cmd, icon))
+    print(f"menu entry: {target}\n  runs: {exec_cmd}\n  icon: {icon}")
+    if not gui:
+        print("  note: 'vpnct-gui' is not on PATH, so the entry runs this Python directly; "
+              "after 'pipx install --editable .' run this command again")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="vpnct", description="Compare direct and VPN network paths.")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -123,6 +181,8 @@ def main(argv: list[str] | None = None) -> int:
     rp.set_defaults(func=cmd_report)
     s = sub.add_parser("sessions", help="list recorded sessions")
     s.set_defaults(func=cmd_sessions)
+    d = sub.add_parser("install-desktop", help="add the tray program to the application menu")
+    d.set_defaults(func=cmd_install_desktop)
     args = ap.parse_args(argv)
     return args.func(args)
 

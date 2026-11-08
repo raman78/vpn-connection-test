@@ -52,10 +52,13 @@ inputs; AION 2 is only the first case.
 | `vpnct/probes.py` | ping and tracepath, with their outputs parsed |
 | `vpnct/session.py` | session directory, CSV files, event log |
 | `vpnct/engine.py` | `Engine`: the loop that ties it together; `snapshot()` for a display |
-| `vpnct/report.py` | summary of one or more sessions |
-| `vpnct/cli.py` | `vpnct record / mark / report / sessions` |
+| `vpnct/report.py` | summary of one or more sessions; `compare_paths` |
+| `vpnct/cli.py` | `vpnct record / mark / report / sessions / install-desktop`; the one-recorder pidfile |
+| `vpnct/config.py` | `config.toml` for starts without options (the menu entry) |
+| `vpnct/gui.py` | `vpnct-gui`: tray icon and window around an in-process `Engine` |
 
-Only the Python standard library; the measuring is done by `ss`, `ip`,
+The recorder and the report use only the Python standard library (PyQt6 is
+for `vpnct-gui` alone); the measuring is done by `ss`, `ip`,
 `nmcli`, `dumpcap`, `tshark`, `ping` and `tracepath`. Nothing runs with
 `sudo`: capture works through the `wireshark` group (dumpcap carries
 `cap_net_raw`/`cap_net_admin`), ping through `net.ipv4.ping_group_range`.
@@ -198,6 +201,10 @@ one at a time for the same reason.
 A ping that could not be sent (exit status 2, or ended by a signal) is an
 **error**, not 100 % loss. Errors are also `probe-error` events.
 
+When recording stops, the probe thread finishes the ping in progress and
+starts no other (`stop` in `run_serial_per_path` and `trace_route`); the
+skipped pings are not written at all rather than written as failures.
+
 Every `TRACE_PERIOD_S` (300 s) — and for all targets at once after a mark —
 `tracepath -n` to each connection target, then a ping to every hop that
 answered (`hops.csv`). tracepath cannot be bound to an interface, so a
@@ -251,7 +258,49 @@ second and each captured minute once.
 - **Hops**: loss that continues to the last hop is real; loss at one hop
   only is that router limiting its own replies.
 
-## 9. Failure modes
+Under the table, **COMPARISON** states, for each service, how each VPN path
+compares with each direct path (`report.compare_paths`): a path with fewer
+than `MIN_MINUTES_FOR_VERDICT` (5) captured minutes gets "not enough data
+yet" instead of a judgement; otherwise it says whether the VPN reduced loss
+(direct at least `LOSS_NOTICEABLE_PCT` 0.5 % and the VPN under a quarter
+of it), whether both were nearly loss-free (then the VPN only costs its
+extra RTT), or whether the VPN lost more. The window shows the same lines.
+
+## 9. The tray program
+
+`vpnct-gui` runs an `Engine` in its own process and only displays it.
+
+- **Settings**: command-line options as for `vpnct record`; without them,
+  `config.toml` (`vpnct/config.py`: `programs`, `ports`, `targets`). An
+  unreadable file or an unknown key is shown in a message box and the
+  program does not start — it never falls back to defaults silently.
+- **One recorder at a time**: `cli.claim_pidfile` refuses to start when the
+  pid in `$XDG_RUNTIME_DIR/vpn-connection-test.pid` is alive. Two
+  recorders would ping through one tunnel at once (§5). The window also
+  answers `vpnct mark` through the same pidfile.
+- **Live data**: every second the window takes `Engine.drain_updates()` —
+  one `SecondPoint` per watched connection and second, one `MinutePoint` per
+  captured connection and minute — into an in-memory history (3 h) per
+  service, and `Engine.snapshot()` for the status, probes and events.
+- **Comparison**: every 15 s a worker thread runs `report.summarise` on the
+  session's files (plus any sessions picked with Compare sessions…) and the
+  table shows its groups for the chosen service. It is the report's own
+  calculation, so the window and `vpnct report` cannot disagree.
+- **Tray icon** colour: the newest captured minute of the busiest service —
+  green no retransmission, yellow some, red `LOSS_RED_PCT` (2 %) or more,
+  grey nothing captured. A desktop without a system tray gets the window
+  at start instead.
+- **Quit** stops the engine on a background thread and leaves once the
+  session is closed. The probe thread stops between pings (§5), so this
+  takes about one ping, a few seconds; measured 1.8 s. SIGTERM and SIGINT
+  take the same path.
+
+`vpnct install-desktop` writes
+`~/.local/share/applications/vpn-connection-test.desktop`, running
+`vpnct-gui` from PATH (else this interpreter with `-m vpnct.gui`), with
+`vpnct/icon.svg` as its icon.
+
+## 10. Failure modes
 
 | Symptom | Meaning |
 |---|---|
@@ -262,7 +311,7 @@ second and each captured minute once.
 | `trace-error ... interrupted by SIGINT` | the recorder was stopped with Ctrl+C while a trace ran (the signal reaches the whole process group) |
 | `counters-reset` | a socket was replaced between two samples on the same 4-tuple; rare, harmless |
 
-## 10. Tests
+## 11. Tests
 
 `python3 -m unittest` in the repository root. Parsers are tested on recorded
 output shapes with documentation addresses. `tests/test_capture.py` runs the

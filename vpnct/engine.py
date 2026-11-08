@@ -40,6 +40,32 @@ def _ep(ip: str, port: int) -> str:
 
 
 @dataclass
+class SecondPoint:
+    """One watched connection during one second, for a live chart."""
+    time: float
+    program: str
+    port: int
+    path: str
+    is_vpn: bool
+    rtt_ms: float | None
+    d_data_segs_in: int
+
+
+@dataclass
+class MinutePoint:
+    """One captured connection during one minute, for a live chart."""
+    minute: float
+    program: str
+    port: int
+    path: str
+    is_vpn: bool
+    covered_s: float
+    data_pkts: int
+    lost_gaps: int
+    retrans: int
+
+
+@dataclass
 class ConnView:
     program: str
     local: str
@@ -98,6 +124,7 @@ class Engine:
         self._last_minute: list[MinuteRow] = []
         self._last_probes: list[dict] = []
         self._recent_events: list[str] = []
+        self._updates: list = []          # SecondPoint / MinutePoint since the last drain
         self._thread: threading.Thread | None = None
         self._probe_thread: threading.Thread | None = None
         self._event(self.started, "start", f"session {self.session.dir} ({selection.describe()})")
@@ -147,8 +174,13 @@ class Engine:
             wanted = {t.last.key: t.path.interface for t in self.tracker.select_captured(now)}
         for e in events:
             self._event(e.time, e.kind, e.text)
+        points = []
         for d in deltas:
             self._write_sample(d)
+            points.append(SecondPoint(d.time, d.program, d.key[3], d.path.label, d.path.is_vpn,
+                                      d.rtt_ms, d.d_data_segs_in))
+        with self._lock:
+            self._updates += points
         self.captures.update(wanted, now)
         self._write_minutes(self.captures.take_rows(now))
 
@@ -174,8 +206,14 @@ class Engine:
                 "covered_s": r.covered_s, "data_pkts": r.data_pkts,
                 "lost_gaps": r.lost_gaps, "retrans": r.retrans,
             })
+        points = []
+        for r in rows:
+            program, path = self._key_info.get(r.key, ("?", self.paths.path_for_interface(r.interface)))
+            points.append(MinutePoint(r.minute, program, r.key[3], path.label, path.is_vpn,
+                                      r.covered_s, r.data_pkts, r.lost_gaps, r.retrans))
         with self._lock:
             self._last_minute = rows
+            self._updates += points
 
     # ---- probes -------------------------------------------------------------
 
@@ -222,8 +260,9 @@ class Engine:
         now = time.time()
         pings = probes.run_serial_per_path(
             jobs, lambda j: j[2] or interfaces.route_interface(j[0]) or "?",
-            lambda j: probes.ping(j[0], j[2]))
-        results = list(zip(jobs, pings))
+            lambda j: probes.ping(j[0], j[2]), stop=self._stop)
+        # Pings skipped because recording stopped are not results; leave them out.
+        results = [(j, r) for j, r in zip(jobs, pings) if r is not None]
         rows = []
         for (target, role, bind), res in results:
             itf = bind or interfaces.route_interface(target)
@@ -237,11 +276,13 @@ class Engine:
             self.session.write("probes.csv", row)
             rows.append(row)
             if res.error:
-                self._event(now, "probe-error", f"ping {target} via {itf or '?'}: {res.error}")
+                self._event(time.time(), "probe-error", f"ping {target} via {itf or '?'}: {res.error}")
         with self._lock:
             self._last_probes = rows
         if with_traces:
             for target, role in targets:
+                if self._stop.is_set():
+                    break
                 if role != "connection" and reason == "schedule":
                     continue
                 self._trace(target)
@@ -250,11 +291,11 @@ class Engine:
         now = time.time()
         itf = interfaces.route_interface(target)
         path = self.paths.path_for_interface(itf).label if itf else "?"
-        hops, error = probes.trace_route(target)
+        hops, error = probes.trace_route(target, stop=self._stop)
         if error:
             self.session.write("hops.csv", {"time": iso(now), "target": target, "path": path,
                                             "hop": "", "address": "", "error": error})
-            self._event(now, "trace-error", f"tracepath {target}: {error}")
+            self._event(time.time(), "trace-error", f"tracepath {target}: {error}")
             return
         for h in hops:
             p = h.ping
@@ -317,11 +358,18 @@ class Engine:
         self._thread = threading.Thread(target=self.run, daemon=True)
         self._thread.start()
 
-    def stop(self) -> None:
+    STOP_TIMEOUT_S = 60
+
+    def stop(self) -> bool:
+        """Stop and wait until the session is closed (its `stop` event
+        written). Probes stop between pings, so this takes about one ping
+        (~5 s) plus the capture shutdown. False if it did not finish in time."""
         self._stop.set()
         self._probe_requests.put("stop")
         if self._thread is not None:
-            self._thread.join(timeout=10)
+            self._thread.join(timeout=self.STOP_TIMEOUT_S)
+            return not self._thread.is_alive()
+        return True
 
     def _finish(self) -> None:
         self._stop.set()
@@ -331,6 +379,12 @@ class Engine:
             self._probe_thread.join(timeout=30)
         self._event(time.time(), "stop", f"session {self.session.dir} closed")
         self.session.close()
+
+    def drain_updates(self) -> list:
+        """New chart points since the previous call (single consumer)."""
+        with self._lock:
+            out, self._updates = self._updates, []
+        return out
 
     def snapshot(self) -> Snapshot:
         now = time.time()

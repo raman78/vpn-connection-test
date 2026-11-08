@@ -7,9 +7,18 @@ name = "vpn-connection-test"
 version = "0.1.0"
 description = "Compare direct and VPN network paths: per-connection RTT and loss, route probes, session logs"
 requires-python = ">=3.11"
+# PyQt6 is needed by the tray program only; the recorder and report use the
+# standard library.
+dependencies = ["PyQt6>=6.5"]
 
 [project.scripts]
 vpnct = "vpnct.cli:main"
 
+[project.gui-scripts]
+vpnct-gui = "vpnct.gui:main"
+
 [tool.setuptools]
 packages = ["vpnct"]
+
+[tool.setuptools.package-data]
+vpnct = ["icon.svg"]
