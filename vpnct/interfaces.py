@@ -35,6 +35,8 @@ class NetPath:
 
     @property
     def label(self) -> str:
+        if self.interface.startswith(UNKNOWN_PATH_PREFIX):
+            return self.interface        # neither direct nor VPN: the address is gone
         kind = "vpn" if self.is_vpn else "direct"
         base = f"{kind}:{self.interface}"
         return f"{base} [{self.connection}]" if self.connection else base

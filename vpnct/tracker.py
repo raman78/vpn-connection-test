@@ -155,8 +155,9 @@ class Tracker:
                 tr.history.append((now, s.data_segs_in))
                 continue
             if path != tr.path:
-                events.append(Event(now, "path-change",
-                                    f"{tr.program} {_fmt_key(s.key)}: {tr.path.label} -> {path.label}"))
+                if tr.watched:           # other connections' moves are not this session's subject
+                    events.append(Event(now, "path-change",
+                                        f"{tr.program} {_fmt_key(s.key)}: {tr.path.label} -> {path.label}"))
                 tr.path = path
             tr.last = s
             tr.history.append((now, s.data_segs_in))

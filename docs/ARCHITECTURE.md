@@ -45,7 +45,7 @@ inputs; AION 2 is only the first case.
 | Module | Role |
 |---|---|
 | `vpnct/ss.py` | runs `ss`, parses per-socket statistics |
-| `vpnct/procs.py` | pid → program name (handles Wine's Windows paths) |
+| `vpnct/procs.py` | pid → program name (Wine's Windows paths; Electron's rewritten command lines) |
 | `vpnct/interfaces.py` | interfaces, VPN detection, path labels, route lookup, VPN gateway |
 | `vpnct/tracker.py` | connections over time, per-second deltas, which ones are watched |
 | `vpnct/capture.py` | header-only capture pipelines and per-minute loss counts |
@@ -84,9 +84,14 @@ for `vpnct-gui` alone); the measuring is done by `ss`, `ip`,
    things are reported instead of being smoothed over:
    - a counter that goes **down** on the same 4-tuple (socket replaced
      between samples): `counters-reset`, new baseline, no negative delta;
-   - a **path change** of a live connection — in particular a VPN switched
-     off under it: its address no longer exists, and the path becomes
-     `gone(<address>)` rather than a guess;
+   - a **path change** of a live watched connection — in particular a VPN
+     switched off under it: its address no longer exists, and the path
+     becomes `gone(<address>)`, labelled neither direct nor VPN, rather
+     than a guess. A VPN server switch shows as two changes about a second
+     apart: `vpn:… [old server] -> gone(…)` while the device is recreated,
+     then `gone(…) -> vpn:… [new server]` (verified 2026-11-09, Proton
+     NL-FREE#89 → NO-FREE#2). Connections that are not watched move
+     silently — they are not what the session measures;
    - a watched connection that **closes**, with its lifetime and volume.
 4. **Choose what is watched.** Pinned (`--program`, `--port`): every
    matching connection, case-insensitive on the program name. Automatic

@@ -71,6 +71,13 @@ class TrackerTests(unittest.TestCase):
         self.assertEqual([e.kind for e in events], ["path-change"])
         self.assertIn("gone(10.99.0.2)", events[0].text)
 
+    def test_unwatched_connection_moving_is_not_an_event(self):
+        s = sock(pid=2, rport=443, local="10.99.0.2")
+        self.t.update([s], PATHS, now=0)
+        no_vpn = PathMap([i for i in PATHS.interfaces if i.name != "wg0"], {})
+        _, events = self.t.update([s], no_vpn, now=1)
+        self.assertEqual(events, [])
+
     def test_closed_watched_connection_is_reported(self):
         self.t.update([sock()], PATHS, now=0)
         _, events = self.t.update([], PATHS, now=5)

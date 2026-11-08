@@ -58,6 +58,15 @@ class ProcTests(unittest.TestCase):
         raw = b"Z:\\home\\u\\Games\\GAME\\Binaries\\Win64\\GAME.exe\0-steam\0"
         self.assertEqual(program_from_cmdline(raw), "GAME.exe")
 
+    def test_electron_rewritten_command_line(self):
+        raw = b"/tmp/.mount_RamboxX/rambox --no-sandbox\0"
+        self.assertEqual(program_from_cmdline(raw), "rambox")
+        self.assertEqual(program_from_cmdline(b"discord --type=renderer --x=1"), "discord")
+
+    def test_windows_path_with_dash_in_real_argv_is_kept(self):
+        raw = b"C:\\Games\\Foo - Bar\\foo.exe\0-steam\0"
+        self.assertEqual(program_from_cmdline(raw), "foo.exe")
+
     def test_unix_path_and_empty(self):
         self.assertEqual(program_from_cmdline(b"/usr/lib/vivaldi/vivaldi-bin\0--type=x"), "vivaldi-bin")
         self.assertIsNone(program_from_cmdline(b""))
@@ -74,7 +83,7 @@ class InterfaceTests(unittest.TestCase):
         pm = PathMap(parse_ip_addr(IP_JSON), {"wg0": "VPN NL#1", "eth0": "Wired"})
         self.assertEqual(pm.path_for("10.99.0.2").label, "vpn:wg0 [VPN NL#1]")
         self.assertEqual(pm.path_for("192.0.2.20").label, "direct:eth0 [Wired]")
-        self.assertEqual(pm.path_for("10.99.0.3").label, "direct:gone(10.99.0.3)")
+        self.assertEqual(pm.path_for("10.99.0.3").label, "gone(10.99.0.3)")
         # a VPN client's dummy device has addresses but no default route
         self.assertEqual([i.name for i in pm.direct_interfaces({"eth0"})], ["eth0"])
         self.assertEqual(pm.direct_interfaces(set()), [])
