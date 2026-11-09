@@ -55,6 +55,38 @@ def percentile(values: list[float], q: float) -> float | None:
     return values[lo] + (values[hi] - values[lo]) * (k - lo)
 
 
+class MinuteAgg:
+    """One minute of one or more connections, built from losses rows.
+
+    A connection's capture can restart within a minute, leaving one row per
+    pipeline; those rows do not overlap, so a connection's coverage is their
+    sum. The minute is as well covered as its least covered connection."""
+
+    __slots__ = ("data", "retrans", "_cover")
+
+    def __init__(self) -> None:
+        self.data = 0
+        self.retrans = 0
+        self._cover: dict = {}
+
+    def add(self, connection, data: int, retrans: int, covered_s: float) -> None:
+        self.data += data
+        self.retrans += retrans
+        self._cover[connection] = self._cover.get(connection, 0.0) + covered_s
+
+    @property
+    def cover(self) -> float:
+        return min((min(60.0, c) for c in self._cover.values()), default=0.0)
+
+    @property
+    def judged(self) -> bool:
+        return self.data >= CAL_MIN_DATA and self.cover >= CAL_MIN_COVER_S
+
+    @property
+    def bad(self) -> bool:
+        return self.judged and 100.0 * self.retrans / self.data >= CAL_TCP_BAD_PCT
+
+
 @dataclass
 class Group:
     """Times are wall-clock: several parallel connections in one group count
@@ -68,6 +100,28 @@ class Group:
     lost_gaps: int = 0
     retrans: int = 0
     worst_minute_pct: float = 0.0
+    minute_tcp: dict = field(default_factory=dict)      # (session, minute) -> MinuteAgg
+
+    @property
+    def judged_minutes(self) -> int:
+        """Minutes with enough captured data to call them good or bad."""
+        return sum(m.judged for m in self.minute_tcp.values())
+
+    @property
+    def bad_minutes(self) -> int:
+        return sum(m.bad for m in self.minute_tcp.values())
+
+    @property
+    def judged_sessions(self) -> set[str]:
+        return {s for (s, _), m in self.minute_tcp.items() if m.judged}
+
+    @property
+    def hosts(self) -> set[str]:
+        return {_host(remote) for _, _, remote in self.connections}
+
+    @property
+    def sessions(self) -> set[str]:
+        return {s for s, _ in self.minute_tcp} | {s for s, _ in self.stamps}
 
     @property
     def seconds(self) -> int:
@@ -111,6 +165,7 @@ class MonitorGroup:
     rtts: list = field(default_factory=list)
     minutes_on_vpn: int = 0      # traffic to this server used a VPN in that minute
     bad_on_vpn: int = 0
+    sessions_on_vpn: set = field(default_factory=set)
     short: int = 0               # minutes not fully covered or with too few pings
 
 
@@ -167,14 +222,11 @@ def summarise(session_dirs: list[Path]) -> dict:
     for d in session_dirs:
         # TCP per (minute, interface, server host), and which minutes each
         # server's traffic used a VPN, for the monitor and the calibration.
-        tcp: dict[tuple, list] = defaultdict(lambda: [0, 0, 60.0])
+        tcp: dict[tuple, MinuteAgg] = defaultdict(MinuteAgg)
         on_vpn: set[tuple] = set()
         for r in _read(d / "losses.csv"):
             k = (r["minute"], r["interface"], _host(r["remote"]))
-            agg = tcp[k]
-            agg[0] += int(r["data_pkts"])
-            agg[1] += int(r["retrans"])
-            agg[2] = min(agg[2], float(r["covered_s"]))
+            tcp[k].add(r["local"], int(r["data_pkts"]), int(r["retrans"]), float(r["covered_s"]))
             if r["path"].startswith("vpn:") and int(r["data_pkts"]) > 0:
                 on_vpn.add((r["minute"], _host(r["remote"])))
         for r in _read(d / "monitor.csv"):
@@ -193,9 +245,10 @@ def summarise(session_dirs: list[Path]) -> dict:
             if (r["minute"], r["target"]) in on_vpn:
                 mg.minutes_on_vpn += 1
                 mg.bad_on_vpn += bad
+                mg.sessions_on_vpn.add(d.name)
             t = tcp.get((r["minute"], r["interface"], r["target"]))
-            if t and t[0] >= CAL_MIN_DATA and t[2] >= CAL_MIN_COVER_S:
-                tcp_bad = 100.0 * t[1] / t[0] >= CAL_TCP_BAD_PCT
+            if t is not None and t.judged:
+                tcp_bad = t.bad
                 calibration.pairs += 1
                 calibration.tcp_bad += tcp_bad
                 calibration.ping_bad += bad
@@ -219,6 +272,9 @@ def summarise(session_dirs: list[Path]) -> dict:
             g.retrans += rtx
             if data >= 50:
                 g.worst_minute_pct = max(g.worst_minute_pct, 100.0 * rtx / data)
+            g.minute_tcp.setdefault((d.name, r["minute"]), MinuteAgg()).add(
+                r["local"], data, rtx, float(r["covered_s"]))
+            g.connections.add((d.name, r["local"], r["remote"]))
         for r in _read(d / "probes.csv"):
             key = (r["target"], r["role"], r["path"], r["bound"])
             pg = probe_groups[key]

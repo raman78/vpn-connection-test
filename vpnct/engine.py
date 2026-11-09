@@ -58,6 +58,8 @@ class MinutePoint:
     minute: float
     program: str
     port: int
+    host: str
+    local_port: int
     path: str
     is_vpn: bool
     covered_s: float
@@ -215,6 +217,7 @@ class Engine:
             })
         with self._lock:
             self._last_monitor = rows
+            self._updates += rows
 
     def _write_sample(self, d: Delta) -> None:
         lip, lport, rip, rport = d.key
@@ -241,7 +244,7 @@ class Engine:
         points = []
         for r in rows:
             program, path = self._key_info.get(r.key, ("?", self.paths.path_for_interface(r.interface)))
-            points.append(MinutePoint(r.minute, program, r.key[3], path.label, path.is_vpn,
+            points.append(MinutePoint(r.minute, program, r.key[3], r.key[2], r.key[1], path.label, path.is_vpn,
                                       r.covered_s, r.data_pkts, r.lost_gaps, r.retrans))
         with self._lock:
             self._last_minute = rows
@@ -414,7 +417,8 @@ class Engine:
         self.session.close()
 
     def drain_updates(self) -> list:
-        """New chart points since the previous call (single consumer)."""
+        """New SecondPoints, MinutePoints and MonitorMinutes since the
+        previous call (single consumer)."""
         with self._lock:
             out, self._updates = self._updates, []
         return out

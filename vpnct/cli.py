@@ -111,10 +111,31 @@ def _session_dirs(names: list[str]) -> list[Path]:
 
 
 def cmd_report(args) -> int:
+    from .advice import format_recommendations
     from .report import format_report, summarise
     dirs = _session_dirs(args.sessions)
     print("sessions: " + ", ".join(d.name for d in dirs))
-    print(format_report(summarise(dirs)))
+    summary = summarise(dirs)
+    print(format_report(summary))
+    print()
+    print("RECOMMENDATION (over these sessions)")
+    print("\n".join(format_recommendations(summary)) or "  (no service with captured data)")
+    return 0
+
+
+def all_session_dirs() -> list[Path]:
+    root = sessions_root()
+    return sorted(p for p in root.iterdir() if p.is_dir()) if root.exists() else []
+
+
+def cmd_recommend(args) -> int:
+    from .advice import format_recommendations
+    from .report import summarise
+    dirs = _session_dirs(args.sessions) if args.sessions else all_session_dirs()
+    if not dirs:
+        raise SystemExit(f"no sessions in {sessions_root()}")
+    print(f"RECOMMENDATION over {len(dirs)} session(s): {dirs[0].name} .. {dirs[-1].name}")
+    print("\n".join(format_recommendations(summarise(dirs))) or "  (no service with captured data)")
     return 0
 
 
@@ -179,6 +200,9 @@ def main(argv: list[str] | None = None) -> int:
     rp = sub.add_parser("report", help="summarise sessions (default: the latest)")
     rp.add_argument("sessions", nargs="*", help="session names or directories")
     rp.set_defaults(func=cmd_report)
+    rc = sub.add_parser("recommend", help="what to use, from all sessions (or the ones named)")
+    rc.add_argument("sessions", nargs="*", help="session names or directories (default: all)")
+    rc.set_defaults(func=cmd_recommend)
     s = sub.add_parser("sessions", help="list recorded sessions")
     s.set_defaults(func=cmd_sessions)
     d = sub.add_parser("install-desktop", help="add the tray program to the application menu")

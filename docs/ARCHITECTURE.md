@@ -56,6 +56,7 @@ inputs; AION 2 is only the first case.
 | `vpnct/report.py` | summary of one or more sessions; `compare_paths` |
 | `vpnct/cli.py` | `vpnct record / mark / report / sessions / install-desktop`; the one-recorder pidfile |
 | `vpnct/config.py` | `config.toml` for starts without options (the menu entry) |
+| `vpnct/advice.py` | the live hint and the recommendation from many sessions (§10) |
 | `vpnct/gui.py` | `vpnct-gui`: tray icon and window around an in-process `Engine` |
 
 The recorder and the report use only the Python standard library (PyQt6 is
@@ -359,7 +360,78 @@ extra RTT), or whether the VPN lost more. The window shows the same lines.
 `vpnct-gui` from PATH (else this interpreter with `-m vpnct.gui`), with
 `vpnct/icon.svg` as its icon.
 
-## 10. Failure modes
+## 10. Hint and recommendation
+
+Both only read what the recorder wrote, and neither switches anything:
+dropping a VPN under a live connection can break the program using it (a
+game freezes when its address disappears), so the person picks the moment.
+
+**Bad minute** — one definition everywhere (`report.MinuteAgg`,
+`CAL_*` constants): for the connection's own traffic, at least
+`CAL_TCP_BAD_PCT` 0.5 % retransmitted of at least `CAL_MIN_DATA` 100 data
+packets, over a minute whose least-covered connection was captured at least
+`CAL_MIN_COVER_S` 55 s; for the direct-path watch, at least
+`CAL_PING_BAD_PCT` 3 % of at least `CAL_MIN_PINGS` 50 pings lost. A
+connection's capture that restarted within a minute leaves several rows for
+it; their coverage is **summed** (they do not overlap). The first version
+took the minimum, which dropped every minute with a restart from judgement
+— 12.5 minutes on one VPN server counted as under 10.
+
+### Live hint (`advice.live_hint`)
+
+For the busiest service (tray) and the chosen one (window), from the
+in-memory minutes of this session:
+
+| Traffic on | Situation | Hint |
+|---|---|---|
+| direct | `RECENT_BAD` (2) of the last `RECENT_MINUTES` (3) judged minutes bad | **switch** to the VPN at the next safe moment |
+| direct | otherwise | ok, or unknown with fewer than 3 judged minutes |
+| VPN | the VPN's own minutes losing, the direct watch clean | **return** (or try another server) |
+| VPN | both losing | stay, try another server |
+| VPN | the direct watch losing (2 of the last 3 minutes) | stay — the VPN is sparing you this |
+| VPN | the direct watch clean for `CLEAN_MINUTES` (10) in a row | **return** at the next safe moment |
+
+Two of three rather than one: one bad minute is a blip, and a switch costs
+the user a trip to character select. Ten clean minutes before suggesting a
+return: the bad periods seen so far lasted minutes, so a shorter calm says
+little. A hint resting on the direct-path ping says so as long as the
+calibration (§8) is not confirmed. A change to **switch** or **return** is
+also a tray notification, once per change.
+
+### Recommendation (`advice.recommend`, `vpnct recommend`, window)
+
+Over all sessions (window: recalculated every 5 min and on request) or the
+named ones, per service with at least `REC_MIN_SERVER_MINUTES` (10) judged
+minutes on some path — a program's side connections are listed, not
+judged. The criterion is the project's: a VPN is worth it if it keeps loss
+near zero in the periods the direct path is bad, at an acceptable latency;
+without bad periods the direct path wins.
+
+1. **Direct-path exposure**: judged minutes of direct traffic, plus — only
+   once ping is confirmed as a stand-in — the watched minutes while on the
+   VPN. Bad minutes counted the same way. Unconfirmed watch minutes are
+   listed with the reason they were not counted.
+2. **Not enough data** below `REC_MIN_DIRECT_MINUTES` (120) of exposure or
+   `REC_MIN_SESSIONS` (3) sessions with it: one evening can be all calm or
+   all bad, and the answer depends on how often bad evenings come.
+3. **VPN servers** with at least 10 judged minutes are ranked by bad-minute
+   fraction, then loss, then RTT. The RTT cost against the direct path says
+   how many seconds of direct traffic it rests on, and that it is too few
+   below ten minutes' worth.
+4. Verdict, with `frac` = bad direct minutes / exposure:
+   - `frac` < `REC_RARE` (2 %): **stay direct** — a VPN costs latency every
+     minute to spare a few;
+   - no ranked server: the direct path's rate, no server to name;
+   - best server's bad fraction at least half of `frac`: **the VPN does not
+     help**;
+   - `frac` ≥ `REC_OFTEN` (10 %): **use the VPN** (best server named);
+   - in between: **use the VPN only when the direct path is losing** — by
+     the tray's hints if ping is confirmed, by "when it stutters" if not.
+
+`vpnct report` ends with the same recommendation over the sessions it was
+given.
+
+## 11. Failure modes
 
 | Symptom | Meaning |
 |---|---|
@@ -370,7 +442,7 @@ extra RTT), or whether the VPN lost more. The window shows the same lines.
 | `trace-error ... interrupted by SIGINT` | the recorder was stopped with Ctrl+C while a trace ran (the signal reaches the whole process group) |
 | `counters-reset` | a socket was replaced between two samples on the same 4-tuple; rare, harmless |
 
-## 11. Tests
+## 12. Tests
 
 `python3 -m unittest` in the repository root. Parsers are tested on recorded
 output shapes with documentation addresses. `tests/test_capture.py` runs the

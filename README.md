@@ -79,6 +79,7 @@ vpnct mark                              # "it stutters now", from another termin
 vpnct sessions                          # list recordings
 vpnct report                            # the latest one
 vpnct report 2026-11-08_230446 ...      # one or several, combined
+vpnct recommend                         # what to use, from all recordings
 ```
 
 The report shows, for each program, service (remote port) and path: round
@@ -97,6 +98,20 @@ and an evening on the other. Whether this ping is a good enough stand-in
 for the game's own losses is checked from the minutes you play directly;
 the report and the window say "unconfirmed" until enough bad minutes have
 been seen to tell.
+
+**Hints and the recommendation.** At the top of the window (and as a tray
+notification when it changes) the program says what to do now: switch to
+the VPN when the direct path has been losing packets for two of the last
+three minutes; stay on the VPN while the direct path is losing; switch back
+once the direct path has been clean for ten minutes. It never switches by
+itself — you pick the safe moment.
+
+Under the comparison, the **recommendation** draws on all your recordings:
+stay direct, use the VPN always, use it only when the direct path is losing,
+or "the VPN does not help" — with the best VPN server and what it costs in
+latency. Until there are two hours of direct-path data over three sessions
+it says how much is still missing instead. From a terminal:
+`vpnct recommend`.
 
 **Ping through a VPN.** Some VPN servers limit ping (ICMP) per user; Proton's
 free servers drop nearly all of it as soon as two pings run at once. The

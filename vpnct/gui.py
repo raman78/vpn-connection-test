@@ -37,14 +37,16 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QComboBox, QDialog
                              QSplitter, QSystemTrayIcon, QTableWidget, QTableWidgetItem,
                              QVBoxLayout, QWidget)
 
-from . import config, report
+from . import advice, config, report
 from .cli import MARK_SIGNAL, claim_pidfile, release_pidfile
 from .engine import Engine, MinutePoint, SecondPoint
+from .monitor import MonitorMinute
 from .session import sessions_root
 from .tracker import Selection
 
 APP_NAME = "vpn-connection-test"
 SUMMARY_PERIOD_MS = 15_000
+RECOMMEND_PERIOD_MS = 300_000
 HISTORY_S = 3 * 3600
 LOSS_RED_PCT = 2.0
 SPANS = [("10 min", 600), ("30 min", 1800), ("1 h", 3600), ("3 h", 3 * 3600)]
@@ -84,15 +86,34 @@ class Store:
         self.seconds: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=HISTORY_S * 4))
         self.minutes: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=HISTORY_S // 60 * 10))
         self.traffic: dict[tuple, int] = defaultdict(int)
+        self.monitor: deque = deque(maxlen=HISTORY_S // 60 * 8)
+        self.hosts: dict[tuple, set] = defaultdict(set)
 
     def add(self, points: list) -> None:
         for pt in points:
+            if isinstance(pt, MonitorMinute):
+                self.monitor.append(pt)
+                continue
             key = (pt.program, pt.port)
             if isinstance(pt, SecondPoint):
                 self.seconds[key].append(pt)
                 self.traffic[key] += pt.d_data_segs_in
             elif isinstance(pt, MinutePoint):
                 self.minutes[key].append(pt)
+                self.hosts[key].add(pt.host)
+
+    def monitor_for(self, key: tuple) -> list[MonitorMinute]:
+        hosts = self.hosts.get(key, set())
+        return [m for m in self.monitor if m.target in hosts]
+
+    def on_vpn_now(self, key: tuple) -> bool | None:
+        """Path of the service's newest second with traffic, if recent."""
+        for pt in reversed(self.seconds.get(key, ())):
+            if time.time() - pt.time > 10:
+                return None
+            if pt.d_data_segs_in > 0:
+                return pt.is_vpn
+        return None
 
     def services(self) -> list[tuple]:
         return sorted(self.seconds, key=lambda k: self.traffic[k], reverse=True)
@@ -232,6 +253,7 @@ class Chart(QWidget):
 
 class Signals(QObject):
     summary = pyqtSignal(object)
+    recommendation = pyqtSignal(object)
 
 
 class SessionPicker(QDialog):
@@ -284,6 +306,10 @@ class Window(QMainWindow):
         central = QWidget()
         lay = QVBoxLayout(central)
 
+        self.hint = QLabel()
+        self.hint.setTextFormat(Qt.TextFormat.RichText)
+        self.hint.setWordWrap(True)
+        lay.addWidget(self.hint)
         self.status = QLabel()
         self.status.setTextFormat(Qt.TextFormat.RichText)
         self.status.setWordWrap(True)
@@ -298,6 +324,9 @@ class Window(QMainWindow):
         self.service.setMinimumWidth(240)
         self.service.currentIndexChanged.connect(self.refresh_chart)
         self.service.currentIndexChanged.connect(self.refresh_table)
+        self.service.currentIndexChanged.connect(
+            lambda: self.parent_app._rec_summary is not None
+            and self.show_recommendation(self.parent_app._rec_summary))
         bar.addWidget(self.service)
         bar.addWidget(QLabel("Span:"))
         self.span = QComboBox()
@@ -334,6 +363,16 @@ class Window(QMainWindow):
         self.verdict = QLabel()
         self.verdict.setWordWrap(True)
         cl.addWidget(self.verdict)
+        rec_bar = QHBoxLayout()
+        rec_bar.addWidget(QLabel("<b>Recommendation</b> (all sessions)"))
+        rec_bar.addStretch(1)
+        self.rec_btn = QPushButton("Recalculate")
+        rec_bar.addWidget(self.rec_btn)
+        cl.addLayout(rec_bar)
+        self.recommendation = QLabel("calculating…")
+        self.recommendation.setWordWrap(True)
+        self.recommendation.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        cl.addWidget(self.recommendation)
         split.addWidget(cmp_box)
 
         low = QSplitter(Qt.Orientation.Horizontal)
@@ -451,6 +490,25 @@ class Window(QMainWindow):
         lines.append("Ping as a stand-in for TCP loss: " + s["calibration"].describe())
         self.verdict.setText("<br>".join(lines))
 
+    HINT_COLOURS = {"switch": RED, "return": "#1f5fbf", "stay": YELLOW, "ok": GREEN, "unknown": GREY}
+
+    def show_hint(self, h: "advice.Hint") -> None:
+        self.hint.setText(f"<span style='color:{self.HINT_COLOURS[h.level]}'><b>{h.text}</b></span>")
+
+    def show_recommendation(self, summary) -> None:
+        key = self.current_service()
+        if isinstance(summary, Exception):
+            self.recommendation.setText(f"recommendation failed: {summary!r}")
+            return
+        main, _rest = advice.main_services(summary)
+        services = [k for k in main if key is None or k == (key[0], str(key[1]))] or main
+        if not services:
+            self.recommendation.setText("no service has enough judged minutes in any session yet")
+            return
+        rec = advice.recommend(summary, services[0])
+        body = "<br>".join("· " + d for d in rec.details)
+        self.recommendation.setText(f"<b>{services[0][0]} :{services[0][1]} — {rec.headline}</b><br>{body}")
+
     def pick_sessions(self) -> None:
         dlg = SessionPicker(self, self.engine.session.dir.name, self.extra_sessions)
         if dlg.exec():
@@ -494,6 +552,15 @@ class App:
         self.summary_timer = QTimer()
         self.summary_timer.timeout.connect(self.request_summary)
         self.summary_timer.start(SUMMARY_PERIOD_MS)
+        self.signals.recommendation.connect(self.on_recommendation)
+        self.window.rec_btn.clicked.connect(self.request_recommendation)
+        self._rec_busy = False
+        self._rec_summary = None
+        self.rec_timer = QTimer()
+        self.rec_timer.timeout.connect(self.request_recommendation)
+        self.rec_timer.start(RECOMMEND_PERIOD_MS)
+        QTimer.singleShot(2000, self.request_recommendation)
+        self._last_hint_level = None
 
     def on_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -507,10 +574,40 @@ class App:
         self.window.raise_()
         self.window.activateWindow()
 
+    def hint_for(self, key: tuple | None) -> "advice.Hint":
+        if key is None:
+            return advice.Hint("unknown", "nothing recorded yet")
+        cal = self.window.summary["calibration"].status if self.window.summary else "unconfirmed"
+        cost = self.rtt_cost(key)
+        return advice.live_hint(self.store.minutes.get(key, []), self.store.monitor_for(key),
+                                self.store.on_vpn_now(key), cal, cost)
+
+    def rtt_cost(self, key: tuple) -> float | None:
+        """VPN minus direct RTT median for the service in this session, when
+        both paths have at least a few minutes of data seconds."""
+        s = self.window.summary
+        if not s:
+            return None
+        paths = report.by_service(s["groups"]).get((key[0], str(key[1])), {})
+        d = [x for p, g in paths.items() if p.startswith("direct:") for x in g.rtts]
+        v = [x for p, g in paths.items() if p.startswith("vpn:") for x in g.rtts]
+        if len(d) < 300 or len(v) < 300:
+            return None
+        return report.percentile(v, .5) - report.percentile(d, .5)
+
     def tick(self) -> None:
         self.store.add(self.engine.drain_updates())
         snap = self.engine.snapshot()
         self.update_tray(snap)
+        services = self.store.services()
+        busiest = services[0] if services else None
+        hint = self.hint_for(busiest)
+        if hint.level in ("switch", "return") and hint.level != self._last_hint_level:
+            self.tray.showMessage(f"{busiest[0]} :{busiest[1]}", hint.text,
+                                  QSystemTrayIcon.MessageIcon.Information, 15000)
+        self._last_hint_level = hint.level
+        if self.window.isVisible():
+            self.window.show_hint(self.hint_for(self.window.current_service()))
         if self.window.isVisible():
             self.window.refresh_services()
             self.window.refresh_status(snap)
@@ -552,6 +649,26 @@ class App:
             self.signals.summary.emit(result)
 
         threading.Thread(target=work, daemon=True).start()
+
+    def request_recommendation(self) -> None:
+        if self._rec_busy:
+            return
+        self._rec_busy = True
+        from .cli import all_session_dirs
+
+        def work():
+            try:
+                result = report.summarise(all_session_dirs())
+            except Exception as exc:        # shown, not swallowed
+                result = exc
+            self.signals.recommendation.emit(result)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_recommendation(self, result) -> None:
+        self._rec_busy = False
+        self._rec_summary = result
+        self.window.show_recommendation(result)
 
     def on_summary(self, result) -> None:
         self._summary_busy = False
