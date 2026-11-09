@@ -328,6 +328,46 @@ extra RTT), or whether the VPN lost more. The window shows the same lines.
 
 `vpnct-gui` runs an `Engine` in its own process and only displays it.
 
+The window has two views, switched by **Advanced** in its header:
+
+- **Overview** — the answer to "which path should I play on?" for one
+  service (the busiest one with enough judged minutes is chosen first):
+  a banner with the live hint (§10) and the path in use; one card per tested
+  path (`advice.path_cards`) with four numbers; the chart; the
+  recommendation's headline. The cards read the all-sessions summary by
+  default ("This session" switches to the current session's).
+- **Advanced** — everything else: status, the full comparison table,
+  calibration, the recommendation's reasoning, the last probes, events,
+  Compare sessions…, the session folder.
+
+Card numbers:
+
+| Number | Meaning | Source |
+|---|---|---|
+| Ping | median RTT over seconds with data | `Group.rtts` |
+| Spikes | RTT p95 minus median — how far the ping jumps above usual | `Group.rtts` |
+| Stability | judged minutes that were not bad (§10) | `Group.judged_minutes`, `bad_minutes` |
+| Loss | remote retransmissions per captured data packet | `report.loss_pct` |
+
+"Spikes" is not the kernel's `rttvar`. Measured on the AION 2 recordings
+(2026-11-09): `rttvar` had a median of 12–16 ms on every path, including the
+direct one whose RTT moved by 3 ms between seconds — it counts delayed
+acknowledgements and the server's own pacing, and would have shown the
+steadiest path as shaky. p95 minus median was 3 ms direct, 7–9 ms through
+the VPN servers.
+
+**★ Best** goes to one card, and only when at least two paths have
+`REC_MIN_SERVER_MINUTES` judged minutes: the highest stability; among
+equally stable paths the lowest ping (loss below the bad-minute threshold is
+not felt); loss only breaks a tie. The badge says which ("most stable" or
+"as stable, lowest ping"). A path with fewer minutes says "Little data". Cards
+count only sessions with judged minutes on that path, the same basis as the
+recommendation.
+
+Look: a fixed light theme (`THEME`, `STYLE`, `apply_theme`: Fusion style,
+palette and one stylesheet), so the window is the same on any desktop
+theme; the chart is painted with the same colours.
+
 - **Settings**: command-line options as for `vpnct record`; without them,
   `config.toml` (`vpnct/config.py`: `programs`, `ports`, `targets`). An
   unreadable file or an unknown key is shown in a message box and the
@@ -400,7 +440,7 @@ also a tray notification, once per change.
 
 ### Recommendation (`advice.recommend`, `vpnct recommend`, window)
 
-Over all sessions (window: recalculated every 5 min and on request) or the
+Over all sessions (window: recalculated every minute and on request) or the
 named ones, per service with at least `REC_MIN_SERVER_MINUTES` (10) judged
 minutes on some path — a program's side connections are listed, not
 judged. The criterion is the project's: a VPN is worth it if it keeps loss

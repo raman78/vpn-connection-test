@@ -250,3 +250,75 @@ def format_recommendations(summary: dict) -> list[str]:
         out.append(f"  not judged (under {REC_MIN_SERVER_MINUTES} judged minutes on any path): "
                    + ", ".join(f"{p} :{port}" for p, port in rest))
     return out
+
+
+# ---- overview cards -------------------------------------------------------------
+
+STABLE_PCT = 99.0      # stability at or above: shown green
+SHAKY_PCT = 95.0       # at or above: amber; below: red
+
+
+@dataclass
+class PathCard:
+    """One path of one service, as the overview shows it."""
+    path: str
+    title: str             # "Direct" / "VPN · <connection name>"
+    subtitle: str          # the interface
+    is_vpn: bool
+    ping_ms: float | None  # median RTT over seconds with data
+    spikes_ms: float | None  # RTT p95 minus median: how far the ping jumps above usual
+    stability_pct: float | None  # judged minutes without loss
+    loss_pct: float | None       # remote retransmissions per captured data packet
+    judged_minutes: int
+    sessions: int          # sessions with judged minutes on this path
+    enough: bool           # judged long enough to be compared
+    best: bool = False
+    best_reason: str = ""
+
+    @property
+    def stability_level(self) -> str:
+        if self.stability_pct is None:
+            return "unknown"
+        return ("good" if self.stability_pct >= STABLE_PCT
+                else "fair" if self.stability_pct >= SHAKY_PCT else "poor")
+
+
+def path_title(path: str) -> tuple[str, str]:
+    """'vpn:wg0 [Name]' -> ('VPN · Name', 'wg0'); 'direct:eth0 [x]' -> ('Direct', 'eth0')."""
+    kind, _, rest = path.partition(":")
+    itf, _, name = rest.partition(" [")
+    name = name.rstrip("]")
+    if kind == "vpn":
+        return (f"VPN · {name}" if name else "VPN"), itf
+    return "Direct", itf
+
+
+def path_cards(paths: dict[str, Group]) -> list[PathCard]:
+    """Cards for a service's paths, direct first. `best` goes to one path
+    only when at least two paths have enough judged minutes to compare:
+    fewest bad minutes, then lowest ping, then least loss."""
+    cards = []
+    for path, g in paths.items():
+        if not (path.startswith("direct:") or path.startswith("vpn:")):
+            continue                         # gone(...): an address that vanished mid-switch
+        judged = g.judged_minutes
+        p50, p95 = percentile(g.rtts, .5), percentile(g.rtts, .95)
+        title, sub = path_title(path)
+        cards.append(PathCard(
+            path, title, sub, path.startswith("vpn:"), p50,
+            (p95 - p50) if p50 is not None and p95 is not None else None,
+            100.0 * (judged - g.bad_minutes) / judged if judged else None,
+            loss_pct(g), judged, len(g.judged_sessions), judged >= REC_MIN_SERVER_MINUTES))
+    # Stability decides; among equally stable paths the lower ping wins, since
+    # loss below the bad-minute threshold is not felt; loss only breaks a tie.
+    ranked = sorted((c for c in cards if c.enough),
+                    key=lambda c: (-(c.stability_pct or 0), c.ping_ms if c.ping_ms is not None else 1e9,
+                                   c.loss_pct if c.loss_pct is not None else 100))
+    if len(ranked) >= 2:
+        first, others = ranked[0], ranked[1:]
+        first.best = True
+        if all((first.stability_pct or 0) > (o.stability_pct or 0) for o in others):
+            first.best_reason = "most stable"
+        else:
+            first.best_reason = "as stable, lowest ping"
+    return sorted(cards, key=lambda c: (c.is_vpn, c.title))

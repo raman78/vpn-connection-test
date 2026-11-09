@@ -39,16 +39,21 @@ numbers. Click the icon for the window; right-click for **It stutters now**
 and **Quit**. Closing the window only hides it — recording goes on until
 Quit.
 
-The window shows, for one service at a time (a program and the server port
-it talks to — e.g. a game's main server):
+The window opens on an **overview** for one connection — e.g. your game's
+server:
 
-- what is happening now: path, RTT, last minute;
-- a chart of RTT and of retransmissions per minute, with the path in use
-  shaded behind it, so a switch to or from the VPN is visible;
-- the comparison of paths — the same numbers as `vpnct report` — with a
-  plain statement under it (or "not enough data yet" until a path has five
-  captured minutes); **Compare sessions…** adds earlier recordings;
-- the last round of pings and the recent events.
+- a banner saying what is happening now and what to do (switch, stay, or
+  you can go back), with the path in use and its ping;
+- one card per path you have tested — the direct connection and each VPN
+  server — with its **ping**, **spikes** (how far the ping jumps above its
+  usual value), **stability** (share of minutes without packet loss) and
+  **loss**; the best one is marked ★ once at least two have enough data;
+- a chart of ping and lost packets, with the path in use shaded behind it;
+- the recommendation from all your recordings.
+
+**Advanced** shows everything behind it: the full comparison table, how
+reliable the direct-path ping is, the recommendation's reasoning, the last
+probes, events, earlier sessions and the folder with the logs.
 
 Switch between the direct connection and the VPN, or between VPN servers,
 whenever it suits the program you are using; the recorder notices the change

@@ -135,3 +135,75 @@ class RecommendTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PathCardTests(unittest.TestCase):
+    def cards(self, sessions):
+        s = RecommendTests().summary(sessions)
+        return {c.title: c for c in advice.path_cards(
+            __import__("vpnct.report", fromlist=["by_service"]).by_service(s["groups"])[("GAME.exe", "13328")])}
+
+    def test_titles_and_stability(self):
+        rows = [loss(f"d{m}", 20 if m < 5 else 0) for m in range(50)]
+        rows += [loss(f"v{m}", 0, "vpn:wg0 [VPN NL#1]", "wg0") for m in range(20)]
+        c = self.cards([rows])
+        self.assertEqual(set(c), {"Direct", "VPN · VPN NL#1"})
+        self.assertAlmostEqual(c["Direct"].stability_pct, 90.0)
+        self.assertEqual(c["Direct"].stability_level, "poor")
+        self.assertEqual(c["VPN · VPN NL#1"].stability_pct, 100.0)
+        self.assertTrue(c["VPN · VPN NL#1"].best)
+        self.assertEqual(c["VPN · VPN NL#1"].best_reason, "most stable")
+        self.assertFalse(c["Direct"].best)
+
+    def test_no_best_with_only_one_comparable_path(self):
+        rows = [loss(f"d{m}", 0) for m in range(50)]
+        rows += [loss(f"v{m}", 0, "vpn:wg0 [X]", "wg0") for m in range(5)]   # too short
+        c = self.cards([rows])
+        self.assertFalse(any(x.best for x in c.values()))
+        self.assertFalse(c["VPN · X"].enough)
+
+    def test_gone_paths_get_no_card(self):
+        rows = [loss(f"d{m}", 0) for m in range(20)]
+        rows += [loss("g", 0, "gone(10.99.0.2)", "?")]
+        from vpnct.report import by_service
+        s = RecommendTests().summary([rows])
+        cards = advice.path_cards(by_service(s["groups"])[("GAME.exe", "13328")])
+        self.assertEqual([c.path for c in cards], ["direct:eth0"])
+
+
+
+def sample_row(t, path, rtt, local="192.0.2.20:1"):
+    return {"time": t, "program": "GAME.exe", "local": local, "remote": f"{HOST}:13328",
+            "path": path, "rtt_ms": rtt, "rttvar_ms": 1, "minrtt_ms": 1, "d_bytes_in": 100,
+            "d_data_segs_in": 10, "d_retrans": 0, "d_ooopack": 0}
+
+
+class BestPathTests(unittest.TestCase):
+    def cards(self, losses, samples):
+        from vpnct.report import by_service
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "s"
+            write_session(d, {"losses.csv": losses, "samples.csv": samples})
+            s = summarise([d])
+        return {c.title: c for c in advice.path_cards(by_service(s["groups"])[("GAME.exe", "13328")])}
+
+    def test_equal_stability_lower_ping_wins_over_tiny_loss(self):
+        vpn = "vpn:wg0 [X]"
+        losses = [loss(f"d{m}", 1) for m in range(20)]                    # 0.1 %: no bad minute
+        losses += [loss(f"v{m}", 0, vpn, "wg0") for m in range(20)]
+        samples = [sample_row(f"d{i}", "direct:eth0", 32) for i in range(30)]
+        samples += [sample_row(f"v{i}", vpn, 43) for i in range(30)]
+        c = self.cards(losses, samples)
+        self.assertTrue(c["Direct"].best)
+        self.assertEqual(c["Direct"].best_reason, "as stable, lowest ping")
+        self.assertFalse(c["VPN · X"].best)
+
+    def test_more_stable_beats_lower_ping(self):
+        vpn = "vpn:wg0 [X]"
+        losses = [loss(f"d{m}", 20 if m < 3 else 0) for m in range(20)]  # 3 bad minutes
+        losses += [loss(f"v{m}", 0, vpn, "wg0") for m in range(20)]
+        samples = [sample_row(f"d{i}", "direct:eth0", 32) for i in range(30)]
+        samples += [sample_row(f"v{i}", vpn, 43) for i in range(30)]
+        c = self.cards(losses, samples)
+        self.assertTrue(c["VPN · X"].best)
+        self.assertEqual(c["VPN · X"].best_reason, "most stable")
