@@ -1,15 +1,32 @@
 [build-system]
-requires = ["setuptools>=68"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
 
 [project]
 name = "vpn-connection-test"
-version = "0.1.0"
-description = "Compare direct and VPN network paths: per-connection RTT and loss, route probes, session logs"
+description = "Is a VPN more stable than your direct connection? Per-connection loss and RTT, route traces and a recommendation, from the system tray."
+readme = "README.md"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [{ name = "raman78" }]
+keywords = ["vpn", "packet-loss", "latency", "network", "wireguard", "linux", "gaming"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Operating System :: POSIX :: Linux",
+    "Environment :: X11 Applications :: Qt",
+    "Topic :: System :: Networking :: Monitoring",
+    "Development Status :: 3 - Alpha",
+    "Natural Language :: English",
+]
 # PyQt6 is needed by the tray program only; the recorder and report use the
 # standard library.
 dependencies = ["PyQt6>=6.5"]
+dynamic = ["version"]
+
+[project.urls]
+homepage = "https://github.com/raman78/vpn-connection-test"
+repository = "https://github.com/raman78/vpn-connection-test"
+issues = "https://github.com/raman78/vpn-connection-test/issues"
 
 [project.scripts]
 vpnct = "vpnct.cli:main"
@@ -17,8 +34,27 @@ vpnct = "vpnct.cli:main"
 [project.gui-scripts]
 vpnct-gui = "vpnct.gui:main"
 
-[tool.setuptools]
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "vpnct/_version.py"
+
+[tool.hatch.version.raw-options]
+# Tags look like 'v0.1.0'; no local "+g<hash>" part, so builds between tags stay PEP 440 clean.
+local_scheme = "no-local-version"
+
+[tool.hatch.build.targets.wheel]
 packages = ["vpnct"]
 
-[tool.setuptools.package-data]
-vpnct = ["icon.svg"]
+[tool.hatch.build.targets.sdist]
+# An explicit list: notes/ (private) must never reach a package, whatever
+# .gitignore says.
+include = [
+    "vpnct/",
+    "tests/",
+    "docs/",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+]

@@ -1,144 +1,59 @@
 # vpn-connection-test
 
-Compares network paths: the direct connection versus one or more VPN
-interfaces, to the hosts that matter. The question it answers for a given
-service is whether a VPN makes the connection more stable than the direct
-route, and whether the latency it adds is worth it.
+Tells you whether a VPN makes your connection to a game (or any other
+service) more stable than your normal connection, and whether the extra
+latency is worth it. It sits in the system tray while you play, measures
+the connection the program really uses, and says which path to use, with
+the numbers behind it.
 
-The idea: intermittent stutter usually comes from short bursts of packet loss
-on some segment of the internet route, not from the local machine or the
-service itself. A VPN only helps if its route avoids that segment. So the test
-records the live connection continuously, alternates blocks with and without
-the VPN, probes the route on each path, and compares loss and round-trip time
-between them — especially during the periods when the direct route is bad.
+The idea: a connection that stutters now and then usually suffers short
+bursts of packet loss somewhere on its internet route, not on your machine
+and not at the server. A VPN sends your traffic along a different route, so
+it helps only if that route avoids the bad part. The only way to know is to
+measure both: the game's own packets on whichever path it uses, and at the
+same time a steady ping of your normal connection, so that the two paths are
+compared in the same minutes, not on different evenings. When the normal
+connection starts losing, the program traces the route to see where the
+loss begins.
 
-First case: the connection to the AION 2 game server through Proton VPN
-(WireGuard).
+It never switches the VPN by itself. Some programs (games especially) break
+when their connection disappears, so it tells you, and you pick the moment.
 
-## Installing
+Linux only. Tested on CachyOS (Arch) with Proton VPN (WireGuard), playing
+AION 2. Nothing in it is specific to that game or that VPN.
 
-```
-pipx install --editable .        # commands vpnct and vpnct-gui; edits apply at once
-vpnct install-desktop            # "VPN connection test" in the application menu
-```
+## Quick start
 
-## The tray program
+1. Install the system tools and allow packet capture — see
+   [Installing](https://github.com/raman78/vpn-connection-test/blob/main/docs/INSTALL.md).
+2. `pipx install vpn-connection-test`
+3. `vpnct install-desktop`, then start **VPN connection test** from the
+   application menu.
+4. Use your program as usual: on the normal connection, on the VPN, on
+   different VPN servers. The window shows which one is the most stable.
 
-Start **VPN connection test** from the menu. It starts recording at once and
-sits in the system tray:
+## Documentation
 
-| Icon | Meaning (last captured minute of the busiest service) |
-|---|---|
-| green | no packet lost |
-| yellow | some retransmissions |
-| red | 2 % or more of the packets retransmitted |
-| grey | nothing captured yet |
+- [docs/INSTALL.md](https://github.com/raman78/vpn-connection-test/blob/main/docs/INSTALL.md) — what it needs, installing,
+  updating, removing.
+- [docs/USING.md](https://github.com/raman78/vpn-connection-test/blob/main/docs/USING.md) — the window and tray icon, what the
+  numbers mean, hints and the recommendation, the terminal commands,
+  problems and questions.
+- [docs/ARCHITECTURE.md](https://github.com/raman78/vpn-connection-test/blob/main/docs/ARCHITECTURE.md) — how it works and why,
+  every log column, failure modes, tests, releases.
+- [CHANGELOG.md](https://github.com/raman78/vpn-connection-test/blob/main/CHANGELOG.md) — what changed in each version.
 
-Hovering shows the path in use, the round trip time and the last minute's
-numbers. Click the icon for the window; right-click for **It stutters now**
-and **Quit**. Closing the window only hides it — recording goes on until
-Quit.
+## What it keeps, and what it never does
 
-The window opens on an **overview** for one connection — e.g. your game's
-server:
-
-- a banner saying what is happening now and what to do (switch, stay, or
-  you can go back), with the path in use and its ping;
-- **Recently**: what each path did over the last 15 minutes, hour or three
-  hours — while you play through the VPN, also whether the direct
-  connection was losing packets meanwhile and where on the route the loss
-  starts (or that it was just a router not answering pings) — with a
-  one-line conclusion such as "the VPN is not needed right now";
-- one card per path you have tested — the direct connection and each VPN
-  server — with its **ping**, **spikes** (how far the ping jumps above its
-  usual value), **stability** (share of minutes without packet loss) and
-  **loss**; the best one is marked ★ once at least two have enough data;
-- a chart of ping and lost packets, with the path in use shaded behind it;
-- the recommendation from all your recordings.
-
-**Advanced** shows everything behind it: the full comparison table, how
-reliable the direct-path ping is, the recommendation's reasoning, the last
-probes, events, earlier sessions and the folder with the logs.
-
-Switch between the direct connection and the VPN, or between VPN servers,
-whenever it suits the program you are using; the recorder notices the change
-by itself and keeps the paths apart. When it stutters, press **It stutters
-now**: the moment is noted and the route is probed at once.
-
-**What to watch.** Started from the menu, it reads
-`~/.config/vpn-connection-test/config.toml`:
-
-```toml
-programs = ["AION2.exe"]     # every connection of these programs
-ports = [13328]              # and/or connections to these server ports
-targets = ["8.8.8.8"]        # extra ping targets (default 8.8.8.8 and 1.1.1.1)
-```
-
-Without that file it watches the busiest internet connections by itself.
-Only one recording runs at a time; starting a second one says so.
-
-## From a terminal
-
-The same recorder without a window, stopped with Ctrl+C:
-
-```
-vpnct record --program AION2.exe        # every connection of that program
-vpnct record --port 13328               # or: connections to that remote port
-vpnct record                            # or: the busiest internet connections
-vpnct mark                              # "it stutters now", from another terminal
-vpnct sessions                          # list recordings
-vpnct report                            # the latest one
-vpnct report 2026-11-08_230446 ...      # one or several, combined
-vpnct recommend                         # what to use, from all recordings
-```
-
-The report shows, for each program, service (remote port) and path: round
-trip time, packets lost by the remote end per minute and in total, a
-comparison of the paths, ping results for each target, and loss per hop of
-the route. Each session is a directory under
-`~/.local/share/vpn-connection-test/sessions/` with plain CSV files and an
-event log; `docs/ARCHITECTURE.md` explains every column.
-
-**Watching the direct path while on the VPN.** Throughout a recording, the
-program pings the server you are connected to once a second through your
-normal connection, bypassing the VPN. So while you play through the VPN it
-still knows whether the direct route would be losing packets right now — the
-comparison is made in the same minutes, not between an evening on one path
-and an evening on the other. Whether this ping is a good enough stand-in
-for the game's own losses is checked from the minutes you play directly;
-the report and the window say "unconfirmed" until enough bad minutes have
-been seen to tell.
-
-**Hints and the recommendation.** At the top of the window (and as a tray
-notification when it changes) the program says what to do now: switch to
-the VPN when the direct path has been losing packets for two of the last
-three minutes; stay on the VPN while the direct path is losing; switch back
-once the direct path has been clean for ten minutes. It never switches by
-itself — you pick the safe moment.
-
-Under the comparison, the **recommendation** draws on all your recordings:
-stay direct, use the VPN always, use it only when the direct path is losing,
-or "the VPN does not help" — with the best VPN server and what it costs in
-latency. Until there are two hours of direct-path data over three sessions
-it says how much is still missing instead. While you play through the VPN,
-the background ping of the direct connection counts too; until enough bad
-minutes have shown that this ping tracks the game's own losses, such a
-recommendation is marked "Provisional". From a terminal:
-`vpnct recommend`.
-
-**Ping through a VPN.** Some VPN servers limit ping (ICMP) per user; Proton's
-free servers drop nearly all of it as soon as two pings run at once. The
-recorder therefore pings one target at a time over each path, and the
-connection's own TCP numbers are the ones to trust.
-
-Needs: `ss` and `ip` (iproute2), `ping` and `tracepath` (iputils), `dumpcap`
-and `tshark` (Wireshark) with your user in the `wireshark` group,
-NetworkManager's `nmcli` for VPN server names (optional); PyQt6 for the
-tray program (pipx installs it).
-
-Rules the tools follow:
-
-- No `sudo`. Packet capture works through membership in the `wireshark` group.
-- Nothing from the measured traffic stays on disk after a measurement:
-  captures can contain private content (game chat), so they are counted and
-  deleted at once. Only numbers are kept.
+- **No `sudo`.** Packet capture works through membership in the
+  `wireshark` group, ping through the system's normal unprivileged ping.
+- **No packet contents on disk.** Only the first 96 bytes of each packet
+  are captured: the headers, which are enough to count lost packets, and
+  on most packets the first few dozen bytes of what they carry. They go
+  through a pipe to the counting tool, which reads only the packet numbers
+  from them, and are never written anywhere.
+- **Only numbers are kept**: per-second and per-minute figures, ping
+  results and route hops, as plain files in
+  `~/.local/share/vpn-connection-test/sessions/`.
+- **Nothing is sent anywhere.** Router names on a traced route come from
+  your system's own name lookup only.

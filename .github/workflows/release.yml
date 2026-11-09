@@ -1,0 +1,76 @@
+name: Release
+
+# Published GitHub Release -> test, build, attach the packages, publish to PyPI.
+# Run by hand (workflow_dispatch) -> the same build, kept as a workflow artifact.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # hatch-vcs reads the version from the tag
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run tests
+        run: python -m unittest
+
+      - name: Build sdist and wheel
+        run: |
+          python -m pip install --quiet build
+          python -m build
+
+      - name: Check the packages
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          SDIST=$(ls dist/*.tar.gz)
+          python -m zipfile -l "$WHEEL" | grep -q "vpnct/icon.svg" || { echo "::error::icon.svg missing from $WHEEL"; exit 1; }
+          if tar -tzf "$SDIST" | grep -q '/notes/'; then echo "::error::private notes/ in $SDIST"; exit 1; fi
+          if [ "$GITHUB_EVENT_NAME" = "release" ]; then
+            BUILT=$(basename "$WHEEL" | sed -E 's/^vpn_connection_test-([^-]+)-.*/\1/')
+            TAG="${GITHUB_REF_NAME#v}"
+            echo "wheel $BUILT | tag $TAG"
+            [ "$BUILT" = "$TAG" ] || { echo "::error::wheel version $BUILT does not match tag $TAG"; exit 1; }
+          fi
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY"
+
+      - name: Keep as workflow artifact
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  # PyPI: uploads exactly the files the build job checked and attached.
+  # Authenticated by PyPI's Trusted Publisher for this workflow (no token).
+  # Releases only: a run by hand has no release to download from.
+  pypi:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the release packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --pattern 'vpn_connection_test-*' --dir dist
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true    # a re-run after a partial upload does not fail

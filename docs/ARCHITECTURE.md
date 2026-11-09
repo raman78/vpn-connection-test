@@ -58,6 +58,7 @@ inputs; AION 2 is only the first case.
 | `vpnct/config.py` | `config.toml` for starts without options (the menu entry) |
 | `vpnct/advice.py` | the live hint and the recommendation from many sessions (§10) |
 | `vpnct/gui.py` | `vpnct-gui`: tray icon and window around an in-process `Engine` |
+| `vpnct/__init__.py` | `__version__`, from the build (§13) |
 
 The recorder and the report use only the Python standard library (PyQt6 is
 for `vpnct-gui` alone); the measuring is done by `ss`, `ip`,
@@ -123,12 +124,20 @@ dumpcap -q -i <iface> -s 96 -f "host R and tcp port P and tcp port L" -w -  |  t
 
 Why this shape:
 
-- **Headers only (`-s 96`).** IP + TCP headers fit in 96 bytes; payload
-  (which in a game includes chat) is never captured. The TCP length comes
-  from the IP header's total length, and loss detection works on sequence
-  numbers, so the analysis needs nothing more. Verified on live game
-  traffic (packet counts match the kernel's) and by the test that cuts a
-  segment out of a header-only stream.
+- **The first 96 bytes (`-s 96`).** IP + TCP headers fit in 96 bytes, and
+  the analysis needs nothing more: the TCP length comes from the IP
+  header's total length, and loss detection works on sequence numbers.
+  Verified on live game traffic (packet counts match the kernel's) and by
+  the test that cuts a segment out of a header-only stream. The limit is
+  not exactly the headers: when they are shorter, the first bytes of the
+  payload (which in a game includes chat) come along — on a WireGuard
+  device there is no link header, so IPv4 (20) + TCP with timestamps (32)
+  leaves 44 bytes of payload per packet. They exist only in the pipe and
+  in tshark's memory; tshark prints only the fields in `TSHARK_FIELDS`, and
+  nothing reaches the disk. A tighter limit would have to keep the
+  sequence numbers of IPv6 packets on an Ethernet device (14 + 40 + 20
+  bytes) and has not been verified against tshark's analysis of truncated
+  TCP options.
 - **A pipe, not `tshark -i`.** `tshark -i` makes dumpcap spool to a
   temporary file in `/tmp` that grows for the whole session; through the
   pipe nothing is written to disk at all.
@@ -570,3 +579,57 @@ missing and one retransmitted segment, and has dumpcap compile a generated
 filter; both are skipped where those programs are absent. The tracker tests
 use a public resolver address as the remote end, because documentation
 ranges are not global and would — correctly — be filtered out.
+
+CI (`.github/workflows/tests.yml`) runs the same suite on every push to
+`develop` and `main`, with tshark installed and capabilities set on dumpcap
+so the capture tests run rather than skip.
+
+## 13. Packaging and releases
+
+The distribution is `vpn-connection-test` on PyPI, installed with
+`pipx install vpn-connection-test`; it provides `vpnct` and `vpnct-gui`.
+PyQt6 is its only dependency; the system tools of §2 are not Python
+packages and are listed in `docs/INSTALL.md`.
+
+**Version.** Built by hatchling with `hatch-vcs`: the version is the git
+tag (`v0.1.0` → `0.1.0`), written at build time to `vpnct/_version.py`
+(ignored by git) and read by `vpnct/__init__.py` into `__version__`, which
+goes into every `session.json`. A source tree that was never built or
+installed reports `0+unknown`; a build between tags is a development
+version, such as `0.1.1.devN` after `v0.1.0` (`local_scheme =
+"no-local-version"` keeps it PEP 440 clean). There is no version to edit
+by hand.
+
+**What a package contains.** The wheel holds `vpnct/` with `icon.svg`.
+The sdist is an explicit include list (`[tool.hatch.build.targets.sdist]`
+in `pyproject.toml`): `vpnct/`, `tests/`, `docs/`, `README.md`,
+`CHANGELOG.md`, `LICENSE`. It is a list rather than "everything git
+tracks" so that `notes/` — private, never committed — cannot reach a
+package even from a working tree where it exists.
+
+**Branches.** Work happens on `develop`; `main` only moves at a release,
+by fast-forward from `develop`.
+
+**Release** (`.github/workflows/release.yml`, on a published GitHub
+Release):
+
+```
+tag vX.Y.Z on main ──► GitHub Release ──► build job ──────────► pypi job
+                                           unit tests            downloads the
+                                           python -m build       attached files,
+                                           checks:               publishes with
+                                            icon in the wheel    PyPI Trusted
+                                            no notes/ in sdist   Publishing
+                                            wheel version = tag  (no token)
+                                           attach to the release
+```
+
+The `pypi` job uploads exactly the files the `build` job checked and
+attached, so what is on PyPI is what is on the release page. A version
+mismatch between the wheel and the tag stops the release before anything
+is uploaded; the usual cause is a tag on a different commit than the one
+checked out. `workflow_dispatch` runs the build alone and keeps the files
+as a workflow artifact, for checking a build without releasing.
+
+`CHANGELOG.md` says what changed for users, one section per version; the
+release notes are that section.

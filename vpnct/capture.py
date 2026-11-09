@@ -1,11 +1,14 @@
 """Count packet loss on watched connections from packet headers.
 
-One pipeline per interface: `dumpcap` captures only the first CAPTURE_SNAPLEN
-bytes of each packet (IP + TCP headers, no payload) and writes pcapng to a
-pipe; `tshark` reads the pipe and runs its TCP sequence analysis. Nothing is
-written to disk — `tshark -i` would spool to a temporary file in /tmp, the
-pipe does not. Payload-free headers still carry everything the analysis
-needs: the TCP length comes from the IP header, losses from sequence numbers.
+`dumpcap` captures only the first CAPTURE_SNAPLEN bytes of each packet and
+writes pcapng to a pipe; `tshark` reads the pipe and runs its TCP sequence
+analysis. Those bytes are the IP and TCP headers and, when the headers are
+shorter than the limit, the first bytes of the payload (up to 44 on a
+WireGuard device with IPv4 and TCP timestamps); tshark prints only the
+fields in TSHARK_FIELDS. Nothing is written to disk — `tshark -i` would
+spool to a temporary file in /tmp, the pipe does not. The headers carry
+everything the analysis needs: the TCP length comes from the IP header,
+losses from sequence numbers.
 
 Per watched connection and per minute, for data packets from the remote end:
 - data_pkts: packets carrying data;

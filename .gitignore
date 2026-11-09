@@ -9,3 +9,8 @@ __pycache__/
 *.pyc
 
 *.egg-info/
+
+# Packaging
+vpnct/_version.py
+dist/
+build/
