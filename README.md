@@ -44,6 +44,11 @@ server:
 
 - a banner saying what is happening now and what to do (switch, stay, or
   you can go back), with the path in use and its ping;
+- **Recently**: what each path did over the last 15 minutes, hour or three
+  hours — while you play through the VPN, also whether the direct
+  connection was losing packets meanwhile and where on the route the loss
+  starts (or that it was just a router not answering pings) — with a
+  one-line conclusion such as "the VPN is not needed right now";
 - one card per path you have tested — the direct connection and each VPN
   server — with its **ping**, **spikes** (how far the ping jumps above its
   usual value), **stability** (share of minutes without packet loss) and
@@ -115,7 +120,10 @@ Under the comparison, the **recommendation** draws on all your recordings:
 stay direct, use the VPN always, use it only when the direct path is losing,
 or "the VPN does not help" — with the best VPN server and what it costs in
 latency. Until there are two hours of direct-path data over three sessions
-it says how much is still missing instead. From a terminal:
+it says how much is still missing instead. While you play through the VPN,
+the background ping of the direct connection counts too; until enough bad
+minutes have shown that this ping tracks the game's own losses, such a
+recommendation is marked "Provisional". From a terminal:
 `vpnct recommend`.
 
 **Ping through a VPN.** Some VPN servers limit ping (ICMP) per user; Proton's

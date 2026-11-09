@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCom
 
 from . import advice, config, report
 from .cli import MARK_SIGNAL, claim_pidfile, release_pidfile
-from .engine import Engine, MinutePoint, SecondPoint
+from .engine import Engine, MinutePoint, RouteResult, SecondPoint
 from .monitor import MonitorMinute
 from .session import sessions_root
 from .tracker import Selection
@@ -139,11 +139,15 @@ class Store:
         self.traffic: dict[tuple, int] = defaultdict(int)
         self.monitor: deque = deque(maxlen=HISTORY_S // 60 * 8)
         self.hosts: dict[tuple, set] = defaultdict(set)
+        self.routes: deque = deque(maxlen=500)
 
     def add(self, points: list) -> None:
         for pt in points:
             if isinstance(pt, MonitorMinute):
                 self.monitor.append(pt)
+                continue
+            if isinstance(pt, RouteResult):
+                self.routes.append(pt)
                 continue
             key = (pt.program, pt.port)
             if isinstance(pt, SecondPoint):
@@ -152,6 +156,10 @@ class Store:
             elif isinstance(pt, MinutePoint):
                 self.minutes[key].append(pt)
                 self.hosts[key].add(pt.host)
+
+    def routes_for(self, key: tuple) -> list[RouteResult]:
+        hosts = self.hosts.get(key, set())
+        return [r for r in self.routes if r.target in hosts]
 
     def monitor_for(self, key: tuple) -> list[MonitorMinute]:
         hosts = self.hosts.get(key, set())
@@ -475,6 +483,7 @@ class Window(QMainWindow):
     def __init__(self, engine: Engine, store: Store, cfg_note: str) -> None:
         super().__init__()
         self.engine, self.store = engine, store
+        self.parent_app = None       # the App sets itself here after construction
         self.extra_sessions: set[str] = set()
         self.summary = None          # this session (plus picked ones), every 15 s
         self.all_summary = None      # all sessions, every minute
@@ -537,6 +546,29 @@ class Window(QMainWindow):
         bt.addWidget(self.banner_text)
         bl.addLayout(bt, 1)
         lay.addWidget(self.banner)
+
+        recent, rl = card()
+        rh = QHBoxLayout()
+        rh.addWidget(label("Recently", "h2"))
+        rh.addWidget(label("this session", "muted"))
+        rh.addStretch(1)
+        self.recent_group = QButtonGroup(self)
+        for i, (name, _secs) in enumerate(advice.RECENT_WINDOWS):
+            b = QPushButton(name)
+            b.setCheckable(True)
+            b.setChecked(i == 1)
+            self.recent_group.addButton(b, i)
+            rh.addWidget(b)
+        self.recent_group.idToggled.connect(lambda _i, on: on and self.parent_app and self.parent_app.tick_view())
+        rl.addLayout(rh)
+        self.recent_lines = QVBoxLayout()
+        self.recent_lines.setSpacing(3)
+        rl.addLayout(self.recent_lines)
+        self.recent_rows: list[tuple[QLabel, QLabel, QLabel]] = []
+        self.recent_conclusion = label("", wrap=True)
+        self.recent_conclusion.setStyleSheet("font-weight: 600;")
+        rl.addWidget(self.recent_conclusion)
+        lay.addWidget(recent)
 
         row = QHBoxLayout()
         row.addWidget(label("Tested paths", "h2"))
@@ -734,6 +766,45 @@ class Window(QMainWindow):
             self.banner_now.setText("No live connection on this service right now")
         self.banner_text.setText(hint.text)
 
+    def recent_window_s(self) -> float:
+        return advice.RECENT_WINDOWS[max(0, self.recent_group.checkedId())][1]
+
+    def show_recent(self, view: "advice.RecentView") -> None:
+        while len(self.recent_rows) < len(view.lines):
+            row = QHBoxLayout()
+            dot, title, text = QLabel(), label("", "h2"), label("", wrap=True)
+            dot.setFixedSize(10, 10)
+            title.setMinimumWidth(240)
+            row.addWidget(dot, 0, Qt.AlignmentFlag.AlignVCenter)
+            row.addWidget(title)
+            row.addWidget(text, 1)
+            self.recent_lines.addLayout(row)
+            self.recent_rows.append((dot, title, text))
+        for (dot, title, text), line in zip(self.recent_rows, view.lines):
+            dot.setStyleSheet(f"background: {LEVEL_COLOURS[line.level]}; border-radius: 5px;")
+            title.setText(line.title)
+            text.setText(line.text)
+            for wdg in (dot, title, text):
+                wdg.show()
+        for row in self.recent_rows[len(view.lines):]:
+            for wdg in row:
+                wdg.hide()
+        colour = self.HINT_COLOURS[view.conclusion.level]
+        self.recent_conclusion.setText(view.conclusion.text)
+        self.recent_conclusion.setStyleSheet(f"font-weight: 600; color: {colour};")
+
+    def comparison_from_cards(self) -> tuple[float | None, str | None]:
+        """(VPN minus direct RTT of the connection, best VPN's title) from the
+        cards' all-time numbers; ping RTT is not comparable with TCP RTT."""
+        cards = getattr(self, "_cards", [])
+        direct = next((c for c in cards if not c.is_vpn and c.ping_ms is not None), None)
+        vpns = sorted((c for c in cards if c.is_vpn and c.enough),
+                      key=lambda c: (-(c.stability_pct or 0), c.ping_ms or 1e9))
+        best = vpns[0] if vpns else None
+        cost = (best.ping_ms - direct.ping_ms
+                if best and direct and best.ping_ms is not None else None)
+        return cost, best.title if best else None
+
     def refresh_cards(self) -> None:
         key = self.current_service()
         summary = self.all_summary if self.scope_all.isChecked() else self.summary
@@ -741,6 +812,7 @@ class Window(QMainWindow):
         if key is not None and isinstance(summary, dict):
             paths = report.by_service(summary["groups"]).get((key[0], str(key[1])), {})
             cards = advice.path_cards(paths)
+        self._cards = cards
         while len(self.cards) < len(cards):
             wdg = PathCardWidget()
             self.cards.append(wdg)
@@ -962,11 +1034,24 @@ class App:
                 self.window.refresh_cards()
             self.window.show_hint(h)
             self.window.refresh_overview(snap, h)
+            self.tick_view()
             self.window.refresh_chart()
             if self.window.stack.currentIndex() == 1:
                 self.window.refresh_status(snap)
                 self.window.refresh_probes(snap)
                 self.window.refresh_events(snap)
+
+    def tick_view(self) -> None:
+        """Recompute the 'Recently' panel for the chosen service and window."""
+        key = self.window.current_service()
+        if key is None:
+            return
+        cost, best = self.window.comparison_from_cards()
+        view = advice.recent_view(self.store.minutes.get(key, []), self.store.seconds.get(key, []),
+                                  self.store.monitor_for(key), self.store.routes_for(key),
+                                  self.store.on_vpn_now(key), self.window.recent_window_s(),
+                                  time.time(), cost, best)
+        self.window.show_recent(view)
 
     def update_tray(self, snap) -> None:
         services = self.store.services()

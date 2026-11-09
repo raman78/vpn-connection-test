@@ -158,3 +158,134 @@ def run_serial_per_path(jobs: list, path_of, run, stop=None) -> list:
     with ThreadPoolExecutor(max_workers=max(1, len(groups))) as pool:
         list(pool.map(work, groups.values()))
     return results
+
+
+# ---- route of a chosen interface -------------------------------------------------
+#
+# tracepath cannot be bound to an interface, so while a VPN is up it traces
+# the tunnel. The direct path is traced with ping instead: `ping -I <iface>
+# -t <ttl>` makes the router <ttl> hops away answer "Time to live exceeded",
+# which needs no privileges (verified 2026-11-09; it also reached the game
+# server, where tracepath stopped at hop 9).
+
+_TTL_FROM_RE = re.compile(r"^From (\S+) .*Time to live exceeded")
+_TTL_REACHED_RE = re.compile(r"bytes from (\S+?):? ")
+HOP_LOSSY_PCT = 10.0        # 2 or more of PING_COUNT lost: the hop is losing
+TTL_TRIES = 2
+
+
+def parse_ttl_ping(stdout: str) -> tuple[str | None, bool]:
+    """-> (address that answered, whether it was the target itself)."""
+    for line in stdout.splitlines():
+        m = _TTL_FROM_RE.match(line.strip())
+        if m:
+            return m.group(1), False
+        m = _TTL_REACHED_RE.search(line)
+        if m:
+            return m.group(1), True
+    return None, False
+
+
+def trace_via(target: str, interface: str, stop=None, max_hops: int = TRACE_MAX_HOPS) -> tuple[list[Hop], str | None]:
+    """Hops to `target` through `interface`, each answering hop then pinged
+    through the same interface, one at a time."""
+    hops: list[Hop] = []
+    reached = False
+    for ttl in range(1, max_hops + 1):
+        if stop is not None and stop.is_set():
+            return hops, "stopped"
+        address = None
+        for _ in range(TTL_TRIES):
+            try:
+                r = subprocess.run(["ping", "-n", "-c", "1", "-W", "1", "-t", str(ttl), "-I", interface, target],
+                                   capture_output=True, text=True, timeout=5)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return hops, str(exc)
+            if r.returncode == 2 and "From" not in r.stdout:
+                return hops, (r.stderr.strip() or r.stdout.strip() or "ping failed").splitlines()[-1]
+            address, reached = parse_ttl_ping(r.stdout)
+            if address:
+                break
+        hops.append(Hop(ttl, address))
+        if reached:
+            break
+    if not reached:
+        return hops, f"target not reached within {max_hops} hops"
+    for hop in hops:
+        if stop is not None and stop.is_set():
+            break
+        if hop.address:
+            hop.ping = ping(hop.address, interface)
+    return hops, None
+
+
+@dataclass
+class RouteVerdict:
+    kind: str                  # real | target-only | hop-limit | clean | no-answer | error
+    text: str
+    start_hop: int | None = None
+    start_address: str | None = None
+    target_loss: float | None = None
+
+
+def _usable(h: Hop) -> bool:
+    """A hop whose pings say something: it answered at least one."""
+    return h.ping is not None and h.ping.error is None and h.ping.received > 0
+
+
+def classify_route(hops: list[Hop], error: str | None, name_of=lambda a: None) -> RouteVerdict:
+    """Where loss starts, read from per-hop pings.
+
+    Loss that starts at a hop and continues on every later answering hop up
+    to the target is real loss on the path. Loss at single hops while the
+    target is clean is those routers limiting their own replies. Loss at the
+    target alone could be the last segment or the server limiting ping."""
+    if error and not hops:
+        return RouteVerdict("error", f"route could not be traced: {error}")
+    if not hops or not hops[-1].address or hops[-1].ping is None:
+        return RouteVerdict("error", f"route incomplete: {error or 'no answer from the target'}")
+    target = hops[-1]
+    if not _usable(target):
+        return RouteVerdict("no-answer", "the server does not answer ping; the route cannot be judged")
+    lossy = lambda h: h.ping.loss_pct >= HOP_LOSSY_PCT
+    tloss = target.ping.loss_pct
+    if not lossy(target):
+        limited = [h for h in hops[:-1] if _usable(h) and lossy(h)]
+        if limited:
+            names = ", ".join(f"hop {h.number} {h.address}" for h in limited)
+            return RouteVerdict("hop-limit", f"route clean to the server; {names} only limit ping replies",
+                                target_loss=tloss)
+        return RouteVerdict("clean", f"route clean to the server ({tloss:.0f} % ping loss)", target_loss=tloss)
+    start = target
+    for h in reversed(hops[:-1]):
+        if not _usable(h):
+            continue
+        if lossy(h):
+            start = h
+        else:
+            break
+    name = name_of(start.address)
+    where = f"hop {start.number} {start.address}" + (f" ({name})" if name else "")
+    if start is target:
+        return RouteVerdict("target-only", f"loss only at the server ({tloss:.0f} %): the last segment, or the "
+                                           f"server limiting ping", start.number, start.address, tloss)
+    return RouteVerdict("real", f"loss starts at {where} and continues to the server ({tloss:.0f} %)",
+                        start.number, start.address, tloss)
+
+
+_names: dict[str, str | None] = {}
+
+
+def reverse_name(address: str, timeout: float = 2.0) -> str | None:
+    """Reverse DNS through the system resolver, cached; None when there is none."""
+    if address in _names:
+        return _names[address]
+    import socket
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(socket.gethostbyaddr, address)
+        try:
+            name = fut.result(timeout=timeout)[0]
+        except Exception:
+            name = None
+    _names[address] = name
+    return name

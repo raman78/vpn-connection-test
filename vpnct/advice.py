@@ -15,6 +15,7 @@ one place; docs/ARCHITECTURE.md §10 gives the reasoning for each.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 
 from .report import (CAL_MIN_COVER_S, CAL_MIN_PINGS, CAL_PING_BAD_PCT, Group, MinuteAgg,
@@ -137,9 +138,21 @@ class Recommendation:
     headline: str
     details: list[str] = field(default_factory=list)
     ranking: list[ServerRank] = field(default_factory=list)
+    provisional: bool = False
+
+
+PROVISIONAL_PREFIX = "Provisional (direct path partly judged by ping): "
 
 
 def recommend(summary: dict, service: tuple[str, str]) -> Recommendation:
+    rec, provisional = _recommend(summary, service)
+    if provisional and rec.verdict != "not-enough-data":
+        rec.headline = PROVISIONAL_PREFIX + rec.headline
+        rec.provisional = True
+    return rec
+
+
+def _recommend(summary: dict, service: tuple[str, str]) -> tuple[Recommendation, bool]:
     """Verdict for one service (program, remote port) over the summarised
     sessions, by the criterion in the project plan: a VPN is worth it if it
     keeps loss near zero in the periods the direct path is bad, at an
@@ -152,11 +165,21 @@ def recommend(summary: dict, service: tuple[str, str]) -> Recommendation:
 
     d_judged = sum(g.judged_minutes for g in direct.values())
     d_bad = sum(g.bad_minutes for g in direct.values())
-    watch_min = sum(mg.minutes_on_vpn for (t, _p), mg in summary["monitor"].items() if t in hosts)
-    watch_bad = sum(mg.bad_on_vpn for (t, _p), mg in summary["monitor"].items() if t in hosts)
-    use_watch = cal.status == "confirmed"
+    mgs = [mg for (t, _p), mg in summary["monitor"].items() if t in hosts]
+    watch_min = sum(mg.minutes_on_vpn for mg in mgs)
+    watch_bad = sum(mg.bad_on_vpn for mg in mgs)
+    watch_real = sum(mg.bad_on_vpn_real for mg in mgs)
+    watch_dismissed = sum(mg.bad_on_vpn_dismissed for mg in mgs)
+    watch_counted = sum(mg.bad_on_vpn_counted for mg in mgs)
+    # The direct-path ping counts once calibration confirms it, and provisionally
+    # while calibration has not had the bad minutes to decide; not when it was
+    # refuted. A clean ping is strong evidence (the game's packets take the same
+    # route); a lossy minute counts unless a trace right after it showed only
+    # routers limiting their ping replies.
+    use_watch = cal.status in ("confirmed", "unconfirmed")
+    provisional = cal.status == "unconfirmed" and watch_min > 0
     exposure = d_judged + (watch_min if use_watch else 0)
-    bad = d_bad + (watch_bad if use_watch else 0)
+    bad = d_bad + (watch_counted if use_watch else 0)
     sessions = set().union(*(g.judged_sessions for g in direct.values())) if direct else set()
     if use_watch:
         sessions |= {s for (t, _p), mg in summary["monitor"].items() if t in hosts
@@ -180,9 +203,12 @@ def recommend(summary: dict, service: tuple[str, str]) -> Recommendation:
 
     details = [
         f"direct path judged in {d_judged} minute(s) of direct traffic, bad in {d_bad}",
-        (f"direct path watched by ping in {watch_min} minute(s) while on the VPN, bad in "
-         f"{watch_bad} — " + ("counted (ping confirmed as a stand-in)" if use_watch else
-                              f"not counted: ping is {cal.status} as a stand-in for TCP loss")),
+        (f"direct path watched by ping in {watch_min} minute(s) while on the VPN, bad in {watch_bad} "
+         f"({watch_real} confirmed by a route trace, {watch_dismissed} dismissed as routers limiting "
+         f"ping, {watch_bad - watch_real - watch_dismissed} unverified) — "
+         + ("counted (ping confirmed as a stand-in)" if cal.status == "confirmed" else
+            "counted provisionally (ping not yet confirmed as a stand-in)" if use_watch else
+            f"not counted: ping proved {cal.status} as a stand-in for TCP loss")),
         f"sessions with direct-path data: {len(sessions)}",
     ]
     for r in ranking:
@@ -200,32 +226,32 @@ def recommend(summary: dict, service: tuple[str, str]) -> Recommendation:
             need.append(f"{REC_MIN_DIRECT_MINUTES - exposure} more minute(s) of the direct path")
         if len(sessions) < REC_MIN_SESSIONS:
             need.append(f"{REC_MIN_SESSIONS - len(sessions)} more session(s)")
-        return Recommendation("not-enough-data", "Not enough data yet: need " + " and ".join(need) + ".",
-                              details, ranking)
+        return (Recommendation("not-enough-data", "Not enough data yet: need " + " and ".join(need) + ".",
+                              details, ranking), provisional)
     frac = bad / exposure
     rate = f"bad in {bad} of {exposure} minutes ({100 * frac:.1f}%)"
     if frac < REC_RARE:
         best = f"; the best VPN server would cost {cost(ranking[0])}" if ranking else ""
-        return Recommendation("stay-direct", f"Stay on the direct path: it was {rate}{best}.",
-                              details, ranking)
+        return (Recommendation("stay-direct", f"Stay on the direct path: it was {rate}{best}.",
+                              details, ranking), provisional)
     if not ranking:
-        return Recommendation("no-vpn-data", f"The direct path was {rate}, but no VPN server has "
+        return (Recommendation("no-vpn-data", f"The direct path was {rate}, but no VPN server has "
                               f"{REC_MIN_SERVER_MINUTES} judged minutes yet to recommend one.",
-                              details, ranking)
+                              details, ranking), provisional)
     best = ranking[0]
     if best.bad_fraction >= frac / 2:
-        return Recommendation("vpn-no-help", f"The VPN does not help: the direct path was {rate}, the "
+        return (Recommendation("vpn-no-help", f"The VPN does not help: the direct path was {rate}, the "
                               f"best server {best.path} {100 * best.bad_fraction:.1f}%.",
-                              details, ranking)
+                              details, ranking), provisional)
     if frac >= REC_OFTEN:
-        return Recommendation("vpn-always", f"Use the VPN: the direct path was {rate}; best server "
+        return (Recommendation("vpn-always", f"Use the VPN: the direct path was {rate}; best server "
                               f"{best.path} ({100 * best.bad_fraction:.1f}% bad, {cost(best)}).",
-                              details, ranking)
+                              details, ranking), provisional)
     signal = ("follow the tray's hints — the direct-path watch is a confirmed signal" if use_watch
               else "switch when it stutters — the direct-path watch is not yet confirmed as a signal")
-    return Recommendation("vpn-when-losing", f"Use the VPN only when the direct path is losing: it was "
+    return (Recommendation("vpn-when-losing", f"Use the VPN only when the direct path is losing: it was "
                           f"{rate}; best server {best.path} ({cost(best)}); {signal}.",
-                          details, ranking)
+                          details, ranking), provisional)
 
 
 def main_services(summary: dict) -> tuple[list[tuple], list[tuple]]:
@@ -322,3 +348,124 @@ def path_cards(paths: dict[str, Group]) -> list[PathCard]:
         else:
             first.best_reason = "as stable, lowest ping"
     return sorted(cards, key=lambda c: (c.is_vpn, c.title))
+
+
+# ---- recent window --------------------------------------------------------------
+
+RECENT_WINDOWS = [("15 min", 900), ("1 h", 3600), ("3 h", 3 * 3600)]
+RECENT_MIN_CLEAN = 10       # watched minutes needed before "direct was clean, VPN not needed"
+
+
+@dataclass
+class RecentLine:
+    level: str          # good | fair | poor | unknown
+    title: str
+    text: str
+
+
+@dataclass
+class RecentView:
+    lines: list[RecentLine]
+    conclusion: Hint
+
+
+def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s: float,
+                now: float, rtt_cost_ms: float | None = None, best_vpn: str | None = None) -> RecentView:
+    """What each path did over the last `window_s` seconds of this session.
+
+    `minutes`/`seconds`: the service's MinutePoints/SecondPoints; `monitor`:
+    MonitorMinutes for its servers; `routes`: engine.RouteResults for them.
+    `rtt_cost_ms`: VPN minus direct RTT of the connection itself, if known
+    (ping RTT and the connection's RTT are not comparable)."""
+    t0 = now - window_s
+    lines: list[RecentLine] = []
+
+    # the traffic's own paths
+    agg: dict[tuple, MinuteAgg] = {}
+    vpn_of: dict[str, bool] = {}
+    for m in minutes:
+        if m.minute >= t0:
+            agg.setdefault((m.minute, m.path), MinuteAgg()).add(
+                (m.host, m.local_port), m.data_pkts, m.retrans, m.covered_s)
+            vpn_of[m.path] = m.is_vpn
+    rtts: dict[str, list[float]] = {}
+    for s in seconds:
+        if s.time >= t0 and s.rtt_ms is not None and s.d_data_segs_in > 0:
+            rtts.setdefault(s.path, []).append(s.rtt_ms)
+    per_path: dict[str, list[MinuteAgg]] = {}
+    for (_minute, path), a in agg.items():
+        if a.judged:
+            per_path.setdefault(path, []).append(a)
+    own_bad: dict[str, tuple[int, int]] = {}
+    for path in sorted(per_path, key=lambda p: (vpn_of[p], p)):
+        judged = per_path[path]
+        bad = sum(a.bad for a in judged)
+        own_bad[path] = (bad, len(judged))
+        rtt = percentile(rtts.get(path, []), .5)
+        title, _itf = path_title(path)
+        lvl = "good" if bad == 0 else "fair" if bad == 1 else "poor"
+        lines.append(RecentLine(lvl, title, f"{len(judged)} min measured, packets lost in {bad}"
+                                + (f", ping {rtt:.0f} ms" if rtt is not None else "")))
+
+    # the direct path watched by ping (meaningful while the traffic is on a VPN)
+    watch = [w for w in _watch_minutes([m for m in monitor if m.minute >= t0])]
+    route_list = sorted((r for r in routes if r.time >= t0 and not r.path.startswith("vpn:")),
+                        key=lambda r: r.time)
+    real = [r for r in route_list if r.verdict.kind in ("real", "target-only")]
+    limited = [r for r in route_list if r.verdict.kind == "hop-limit"]
+    w_bad = sum(b for _m, b, _w in watch)
+    if watch and (on_vpn or not per_path):
+        worst = max(w for _m, _b, w in watch)
+        lvl = "good" if w_bad == 0 else "fair" if w_bad == 1 else "poor"
+        lines.append(RecentLine(lvl, "Direct (ping in the background)",
+                                f"{len(watch)} min watched, pings lost in {w_bad}"
+                                + (f" (worst {worst:.0f} %)" if w_bad else "")))
+    if route_list:
+        last = (real or route_list)[-1]
+        lvl = "poor" if last.verdict.kind in ("real", "target-only") else "good"
+        lines.append(RecentLine(lvl, "Direct route", last.verdict.text
+                                + f" — traced {time.strftime('%H:%M', time.localtime(last.time))}"))
+
+    # conclusion
+    cost = f" (it costs about {rtt_cost_ms:+.0f} ms)" if rtt_cost_ms is not None else ""
+    where = f": {real[-1].verdict.text}" if real else ""
+    span = _span_text(window_s)
+    if on_vpn is None and not per_path:
+        return RecentView(lines, Hint("unknown", f"No traffic on this connection in the last {span}."))
+    if on_vpn:
+        vpn_paths = [p for p in own_bad if vpn_of[p]]
+        vbad = sum(own_bad[p][0] for p in vpn_paths)
+        vmin = sum(own_bad[p][1] for p in vpn_paths)
+        if vbad >= RECENT_BAD:
+            return RecentView(lines, Hint("return", f"This VPN server lost packets in {vbad} of {vmin} "
+                                                    f"minutes — try another server or the direct path."))
+        if w_bad >= RECENT_BAD and (real or not limited):
+            check = "" if real else " (not yet confirmed by a route trace)"
+            return RecentView(lines, Hint("stay", f"The direct path was losing in {w_bad} of {len(watch)} "
+                                                  f"minutes{where}{check} — the VPN spared you this."))
+        if w_bad >= RECENT_BAD:
+            return RecentView(lines, Hint("ok", f"Pings on the direct path were lost in {w_bad} minutes, but "
+                                                f"the route trace shows only routers limiting ping replies — "
+                                                f"the direct path itself looked fine."))
+        if len(watch) >= RECENT_MIN_CLEAN and w_bad == 0:
+            return RecentView(lines, Hint("return", f"The direct path was clean for all {len(watch)} watched "
+                                                    f"minutes — the VPN is not needed right now{cost}."))
+        return RecentView(lines, Hint("unknown", f"The VPN is clean; the direct path has {len(watch)} of "
+                                                 f"{RECENT_MIN_CLEAN} watched minutes needed to judge it."))
+    dbad, dmin = (sum(own_bad[p][0] for p in own_bad if not vpn_of[p]),
+                  sum(own_bad[p][1] for p in own_bad if not vpn_of[p]))
+    if dbad >= RECENT_BAD:
+        to = f" ({best_vpn} has been the best so far)" if best_vpn else ""
+        return RecentView(lines, Hint("switch", f"The direct path lost packets in {dbad} of {dmin} minutes"
+                                                f"{where} — switch to the VPN{to}."))
+    if dmin == 0:
+        return RecentView(lines, Hint("unknown", f"Not enough measured minutes in the last {span} yet."))
+    return RecentView(lines, Hint("ok", f"The direct path was stable in the last {span} "
+                                        f"({dmin} min, packets lost in {dbad})."))
+
+
+def _span_text(window_s: float) -> str:
+    for name, secs in RECENT_WINDOWS:
+        if secs == window_s:
+            return name
+    return f"{window_s / 60:.0f} min"

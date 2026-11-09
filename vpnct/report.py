@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import csv
 import statistics
+from datetime import datetime
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -166,6 +167,20 @@ class MonitorGroup:
     minutes_on_vpn: int = 0      # traffic to this server used a VPN in that minute
     bad_on_vpn: int = 0
     sessions_on_vpn: set = field(default_factory=set)
+    # Bad minutes checked against a route trace made right after them:
+    bad_real: int = 0            # trace saw loss starting on the path (or at the server)
+    bad_dismissed: int = 0       # trace saw only single routers limiting ping replies
+    bad_on_vpn_real: int = 0
+    bad_on_vpn_dismissed: int = 0
+
+    @property
+    def bad_unverified(self) -> int:
+        return self.bad - self.bad_real - self.bad_dismissed
+
+    @property
+    def bad_on_vpn_counted(self) -> int:
+        """Bad minutes while on the VPN that a trace did not dismiss."""
+        return self.bad_on_vpn - self.bad_on_vpn_dismissed
     short: int = 0               # minutes not fully covered or with too few pings
 
 
@@ -208,6 +223,28 @@ class Calibration:
                 f"(need {100 * CAL_PRECISION:.0f}%)")
 
 
+ROUTE_WINDOW_S = 240     # a trace this soon after a bad minute's end judges that minute
+
+
+def _ts(text: str) -> float | None:
+    try:
+        return datetime.fromisoformat(text).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def route_verdict_for(routes: list[tuple[float, str, str, str]], target: str, interface: str,
+                      minute_start: float | None) -> str | None:
+    """Verdict of the first trace of `target` via `interface` made during the
+    minute or within ROUTE_WINDOW_S after it."""
+    if minute_start is None:
+        return None
+    for t, tgt, itf, verdict in routes:
+        if tgt == target and itf == interface and minute_start <= t <= minute_start + 60 + ROUTE_WINDOW_S:
+            return verdict
+    return None
+
+
 def _host(endpoint: str) -> str:
     return endpoint.rpartition(":")[0].strip("[]")
 
@@ -229,6 +266,8 @@ def summarise(session_dirs: list[Path]) -> dict:
             tcp[k].add(r["local"], int(r["data_pkts"]), int(r["retrans"]), float(r["covered_s"]))
             if r["path"].startswith("vpn:") and int(r["data_pkts"]) > 0:
                 on_vpn.add((r["minute"], _host(r["remote"])))
+        routes = sorted((_ts(r["time"]), r["target"], r["interface"], r["verdict"])
+                        for r in _read(d / "routes.csv") if _ts(r["time"]) is not None)
         for r in _read(d / "monitor.csv"):
             mg = monitor_groups[(r["target"], r["path"])]
             sent, cover = int(r["sent"] or 0), float(r["covered_s"] or 0)
@@ -239,12 +278,20 @@ def summarise(session_dirs: list[Path]) -> dict:
             bad = loss >= CAL_PING_BAD_PCT
             mg.minutes += 1
             mg.bad += bad
+            verdict = (route_verdict_for(routes, r["target"], r["interface"], _ts(r["minute"]))
+                       if bad else None)
+            real = verdict in ("real", "target-only")
+            dismissed = verdict == "hop-limit"
+            mg.bad_real += real
+            mg.bad_dismissed += dismissed
             mg.losses.append(loss)
             if _f(r["rtt_p50"]) is not None:
                 mg.rtts.append(float(r["rtt_p50"]))
             if (r["minute"], r["target"]) in on_vpn:
                 mg.minutes_on_vpn += 1
                 mg.bad_on_vpn += bad
+                mg.bad_on_vpn_real += real
+                mg.bad_on_vpn_dismissed += dismissed
                 mg.sessions_on_vpn.add(d.name)
             t = tcp.get((r["minute"], r["interface"], r["target"]))
             if t is not None and t.judged:
@@ -392,12 +439,14 @@ def format_report(summary: dict) -> str:
     out.append("")
     out.append("DIRECT-PATH MONITOR (1 ping/s per server through the direct interface,")
     out.append(f"whichever path the traffic used; a bad minute loses >= {CAL_PING_BAD_PCT:.0f}% of its pings)")
-    header = (f"{'target':<18} {'path':<36} {'minutes':>7} {'bad':>5} {'loss avg':>8} "
-              f"{'RTT med':>8} {'on VPN':>7} {'bad then':>8} {'short':>6}")
+    out.append("(bad minutes checked by a route trace right after: 'real' = loss starts on the path,")
+    out.append(" 'dismissed' = only single routers limit ping replies; the rest are unverified)")
+    header = (f"{'target':<18} {'path':<36} {'minutes':>7} {'bad':>5} {'real':>5} {'dismissed':>9} "
+              f"{'loss avg':>8} {'RTT med':>8} {'on VPN':>7} {'bad then':>8} {'short':>6}")
     out.append(header)
     out.append("-" * len(header))
     for (target, path), mg in sorted(summary["monitor"].items()):
-        out.append(f"{target:<18} {path[:36]:<36} {mg.minutes:>7} {mg.bad:>5} "
+        out.append(f"{target:<18} {path[:36]:<36} {mg.minutes:>7} {mg.bad:>5} {mg.bad_real:>5} {mg.bad_dismissed:>9} "
                    f"{_n(statistics.fmean(mg.losses) if mg.losses else None):>8} "
                    f"{_n(statistics.median(mg.rtts) if mg.rtts else None):>8} "
                    f"{mg.minutes_on_vpn:>7} {mg.bad_on_vpn:>8} {mg.short:>6}")

@@ -28,8 +28,12 @@ HOPS_FIELDS = ["time", "target", "path", "hop", "address", "sent", "received", "
 MONITOR_FIELDS = ["minute", "target", "interface", "path", "covered_s", "sent", "received",
                   "loss_pct", "rtt_p50", "rtt_max"]
 
+ROUTES_FIELDS = ["time", "target", "interface", "path", "trigger", "verdict", "start_hop",
+                 "start_address", "target_loss_pct", "hops", "text"]
+
 FILES = {"samples.csv": SAMPLES_FIELDS, "losses.csv": LOSSES_FIELDS,
-         "probes.csv": PROBES_FIELDS, "hops.csv": HOPS_FIELDS, "monitor.csv": MONITOR_FIELDS}
+         "probes.csv": PROBES_FIELDS, "hops.csv": HOPS_FIELDS, "monitor.csv": MONITOR_FIELDS,
+         "routes.csv": ROUTES_FIELDS}
 
 
 def sessions_root() -> Path:

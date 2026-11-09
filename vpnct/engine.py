@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from . import __version__, interfaces, probes, ss
 from .capture import CaptureManager, MinuteRow
 from .monitor import MONITOR_MAX_TARGETS, MonitorManager, MonitorMinute
+from .report import CAL_PING_BAD_PCT
 from .interfaces import NetPath, PathMap
 from .session import Session, iso
 from .tracker import Delta, Event, Selection, Tracker
@@ -31,6 +32,8 @@ from .tracker import Delta, Event, Selection, Tracker
 SAMPLE_PERIOD_S = 1.0
 PROBE_PERIOD_S = 60.0
 TRACE_PERIOD_S = 300.0
+LOSS_TRACE_COOLDOWN_S = 120.0     # at most one loss-triggered trace per server this often
+LOSS_TRACE_MIN_PINGS = 30         # a monitor minute needs this many pings to trigger one
 NM_REFRESH_S = 5.0
 DEFAULT_EXTRA_TARGETS = ("8.8.8.8", "1.1.1.1")
 MAX_CONNECTION_TARGETS = 4
@@ -69,6 +72,17 @@ class MinutePoint:
 
 
 @dataclass
+class RouteResult:
+    """One judged trace of a path to a server, for the display."""
+    time: float
+    target: str
+    interface: str
+    path: str
+    trigger: str
+    verdict: probes.RouteVerdict
+
+
+@dataclass
 class ConnView:
     program: str
     local: str
@@ -95,6 +109,7 @@ class Snapshot:
     last_probes: list[dict]
     recent_events: list[str]
     last_monitor: list[MonitorMinute]
+    last_routes: list[RouteResult]
     paths: list[str] = field(default_factory=list)
 
 
@@ -120,6 +135,8 @@ class Engine:
         self.monitors = MonitorManager(self._capture_event)
         self._default_devs: set[str] = set()
         self._last_monitor: list[MonitorMinute] = []
+        self._loss_trace_at: dict[str, float] = {}
+        self._last_routes: dict[tuple[str, str], RouteResult] = {}
         self.paths = PathMap([], {})
         self._nm_names: dict[str, str] = {}
         self._nm_at = 0.0
@@ -218,6 +235,17 @@ class Engine:
         with self._lock:
             self._last_monitor = rows
             self._updates += rows
+        # A minute in which the direct path lost pings: trace it now, while
+        # the loss is likely still there, to see where it starts.
+        now = time.time()
+        for r in rows:
+            if (r.sent >= LOSS_TRACE_MIN_PINGS and r.loss_pct is not None
+                    and r.loss_pct >= CAL_PING_BAD_PCT
+                    and now - self._loss_trace_at.get(r.target, 0) >= LOSS_TRACE_COOLDOWN_S):
+                self._loss_trace_at[r.target] = now
+                self._event(now, "watch-loss", f"ping {r.target} via {r.interface} lost "
+                                               f"{r.loss_pct:.0f}% in the last minute; tracing the route")
+                self._probe_requests.put(("watch-loss", r.target))
 
     def _write_sample(self, d: Delta) -> None:
         lip, lport, rip, rport = d.key
@@ -320,7 +348,46 @@ class Engine:
                     break
                 if role != "connection" and reason == "schedule":
                     continue
-                self._trace(target)
+                self._trace_paths(target, reason)
+
+    def _trace_paths(self, target: str, trigger: str) -> None:
+        """The direct path through every direct interface (ping with a TTL,
+        so it works while a VPN is up); with a VPN up, also the route the
+        system uses, which is the tunnel (tracepath)."""
+        directs = self.paths.direct_interfaces(interfaces.read_default_route_devices())
+        for d in directs:
+            if self._stop.is_set():
+                return
+            self._trace_direct(target, d.name, trigger)
+        if self.paths.vpn_interfaces() or not directs:
+            self._trace(target)
+
+    def _trace_direct(self, target: str, itf: str, trigger: str) -> None:
+        now = time.time()
+        path = self.paths.path_for_interface(itf).label
+        hops, error = probes.trace_via(target, itf, stop=self._stop)
+        if error == "stopped":
+            return
+        for h in hops:
+            pr = h.ping
+            self.session.write("hops.csv", {
+                "time": iso(now), "target": target, "path": path, "hop": h.number,
+                "address": h.address or "", "sent": pr.sent if pr else "",
+                "received": pr.received if pr else "", "loss_pct": pr.loss_pct if pr else "",
+                "rtt_avg": pr.rtt_avg if pr else "",
+                "error": (pr.error or "") if pr else "no reply to the TTL probe"})
+        verdict = probes.classify_route(hops, error, probes.reverse_name)
+        self.session.write("routes.csv", {
+            "time": iso(now), "target": target, "interface": itf, "path": path, "trigger": trigger,
+            "verdict": verdict.kind, "start_hop": verdict.start_hop or "",
+            "start_address": verdict.start_address or "",
+            "target_loss_pct": verdict.target_loss if verdict.target_loss is not None else "",
+            "hops": len(hops), "text": verdict.text})
+        self._event(time.time(), "route", f"{target} via {itf} ({trigger}): {verdict.text}")
+        result = RouteResult(now, target, itf, path, trigger, verdict)
+        with self._lock:
+            self._last_routes[(target, itf)] = result
+            self._updates.append(result)
 
     def _trace(self, target: str) -> None:
         now = time.time()
@@ -353,6 +420,12 @@ class Engine:
             if self._stop.is_set():
                 break
             now = time.time()
+            if isinstance(reason, tuple):            # ("watch-loss", target): that route only
+                try:
+                    self._trace_paths(reason[1], reason[0])
+                except Exception as exc:
+                    self._event(time.time(), "trace-error", f"route of {reason[1]} failed: {exc!r}")
+                continue
             traces = reason != "schedule" or now >= next_trace
             try:
                 self._probe_round(traces, reason)
@@ -438,4 +511,5 @@ class Engine:
                         conns, self.tracker.unwatched_count(), self.tracker.skipped_local,
                         self.captures.status(), list(self._last_minute),
                         list(self._last_probes), list(self._recent_events[-10:]),
-                        list(self._last_monitor), sorted({c.path for c in conns}))
+                        list(self._last_monitor), list(self._last_routes.values()),
+                        sorted({c.path for c in conns}))

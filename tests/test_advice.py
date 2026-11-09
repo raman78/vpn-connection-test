@@ -108,22 +108,61 @@ class RecommendTests(unittest.TestCase):
         self.assertEqual(self.verdict(self.direct_sessions(None, n_sessions=1, minutes=200)),
                          "not-enough-data")
 
-    def test_unconfirmed_watch_does_not_move_the_verdict(self):
-        # clean direct traffic, but the ping watch says the direct path was bad
-        # in every VPN minute; ping is unconfirmed, so that must not count
+    def watch_summary(self, route_verdict=None, refute=False, route_delay_min=1.5):
+        """Three sessions: 50 clean direct minutes each, then 20 VPN minutes in
+        which the direct-path ping lost 17 % every minute."""
+        from datetime import datetime, timezone
+        iso = lambda m: datetime.fromtimestamp(1_800_000_000 + 60 * m, timezone.utc).isoformat()
         with tempfile.TemporaryDirectory() as tmp:
             dirs = []
-            for i, rows in enumerate(self.direct_sessions(None)):
+            for i in range(3):
                 d = Path(tmp) / f"s{i}"
-                monitor = [{"minute": f"v{m}", "target": HOST, "interface": "eth0",
+                rows = [loss(iso(m), 0) for m in range(50)]
+                rows += [loss(iso(100 + m), 0, "vpn:wg0 [X]", "wg0") for m in range(20)]
+                monitor = [{"minute": iso(100 + m), "target": HOST, "interface": "eth0",
                             "path": "direct:eth0", "covered_s": 60, "sent": 60, "received": 50,
                             "loss_pct": 16.7, "rtt_p50": 20, "rtt_max": 30} for m in range(20)]
-                write_session(d, {"losses.csv": rows, "monitor.csv": monitor})
+                if refute:      # direct minutes where TCP lost but ping did not: ping misses loss
+                    rows += [loss(iso(200 + m), 20) for m in range(6)]
+                    monitor += [{"minute": iso(200 + m), "target": HOST, "interface": "eth0",
+                                 "path": "direct:eth0", "covered_s": 60, "sent": 60, "received": 60,
+                                 "loss_pct": 0.0, "rtt_p50": 20, "rtt_max": 30} for m in range(6)]
+                routes = ([{"time": iso(100 + m + route_delay_min), "target": HOST, "interface": "eth0",
+                            "path": "direct:eth0", "trigger": "watch-loss", "verdict": route_verdict,
+                            "start_hop": "", "start_address": "", "target_loss_pct": 0, "hops": 5,
+                            "text": ""} for m in range(20)] if route_verdict else [])
+                write_session(d, {"losses.csv": rows, "monitor.csv": monitor, "routes.csv": routes})
                 dirs.append(d)
-            s = summarise(dirs)
+            return summarise(dirs)
+
+    def test_unconfirmed_watch_counts_provisionally(self):
+        s = self.watch_summary()
         self.assertEqual(s["calibration"].status, "unconfirmed")
         rec = advice.recommend(s, ("GAME.exe", "13328"))
+        self.assertEqual(rec.verdict, "vpn-always")
+        self.assertTrue(rec.provisional)
+        self.assertTrue(rec.headline.startswith(advice.PROVISIONAL_PREFIX))
+
+    def test_minutes_a_trace_dismissed_do_not_count(self):
+        rec = advice.recommend(self.watch_summary("hop-limit"), ("GAME.exe", "13328"))
         self.assertEqual(rec.verdict, "stay-direct")
+        self.assertTrue(any("60 dismissed" in d for d in rec.details))
+
+    def test_a_trace_long_after_does_not_judge_the_minute(self):
+        rec = advice.recommend(self.watch_summary("hop-limit", route_delay_min=30), ("GAME.exe", "13328"))
+        self.assertEqual(rec.verdict, "vpn-always")
+        self.assertTrue(any("0 dismissed" in d for d in rec.details))
+
+    def test_minutes_a_trace_confirmed_count(self):
+        rec = advice.recommend(self.watch_summary("real"), ("GAME.exe", "13328"))
+        self.assertEqual(rec.verdict, "vpn-always")
+        self.assertTrue(any("60 confirmed" in d for d in rec.details))
+
+    def test_refuted_ping_is_not_counted(self):
+        s = self.watch_summary(refute=True)
+        self.assertEqual(s["calibration"].status, "refuted")
+        rec = advice.recommend(s, ("GAME.exe", "13328"))
+        self.assertFalse(rec.provisional)
         self.assertTrue(any("not counted" in d for d in rec.details))
 
     def test_side_services_are_listed_not_judged(self):
@@ -207,3 +246,68 @@ class BestPathTests(unittest.TestCase):
         c = self.cards(losses, samples)
         self.assertTrue(c["VPN · X"].best)
         self.assertEqual(c["VPN · X"].best_reason, "most stable")
+
+
+class RecentViewTests(unittest.TestCase):
+    NOW = 100_000.0
+
+    def route(self, kind, ago=30):
+        from vpnct.engine import RouteResult
+        from vpnct.probes import RouteVerdict
+        text = {"real": "loss starts at hop 9 198.51.100.9 and continues to the server (15 %)",
+                "hop-limit": "route clean to the server; hop 4 198.51.100.4 only limit ping replies",
+                "clean": "route clean to the server (0 % ping loss)"}[kind]
+        return RouteResult(self.NOW - ago, HOST, "eth0", "direct:eth0", "watch-loss", RouteVerdict(kind, text))
+
+    def view(self, minutes=(), monitor=(), routes=(), on_vpn=True, window=3600, **kw):
+        return advice.recent_view(list(minutes), [], list(monitor), list(routes), on_vpn, window, self.NOW, **kw)
+
+    def vpn_minutes(self, n, bad=0):
+        return [mp(self.NOW - 60 * (i + 1), 20 if i < bad else 0, vpn=True) for i in range(n)]
+
+    def watch(self, n, bad=0, start_ago=1):
+        return [mon(self.NOW - 60 * (i + start_ago), 10 if i < bad else 0) for i in range(n)]
+
+    def test_direct_losing_on_the_route_while_on_vpn(self):
+        v = self.view(self.vpn_minutes(20), self.watch(20, bad=3), [self.route("real")])
+        self.assertEqual(v.conclusion.level, "stay")
+        self.assertIn("starts at hop 9", v.conclusion.text)
+
+    def test_ping_loss_dismissed_by_the_route(self):
+        v = self.view(self.vpn_minutes(20), self.watch(20, bad=3), [self.route("hop-limit")])
+        self.assertEqual(v.conclusion.level, "ok")
+        self.assertIn("limiting ping", v.conclusion.text)
+
+    def test_unverified_ping_loss_says_so(self):
+        v = self.view(self.vpn_minutes(20), self.watch(20, bad=3))
+        self.assertEqual(v.conclusion.level, "stay")
+        self.assertIn("not yet confirmed", v.conclusion.text)
+
+    def test_direct_clean_on_vpn_says_not_needed(self):
+        v = self.view(self.vpn_minutes(20), self.watch(12), rtt_cost_ms=11)
+        self.assertEqual(v.conclusion.level, "return")
+        self.assertIn("+11 ms", v.conclusion.text)
+
+    def test_vpn_server_itself_losing(self):
+        v = self.view(self.vpn_minutes(20, bad=3), self.watch(20))
+        self.assertEqual(v.conclusion.level, "return")
+        self.assertIn("This VPN server lost", v.conclusion.text)
+
+    def test_direct_traffic_losing_names_best_vpn(self):
+        minutes = [mp(self.NOW - 60 * (i + 1), 20 if i < 3 else 0) for i in range(15)]
+        v = self.view(minutes, on_vpn=False, best_vpn="VPN · X")
+        self.assertEqual(v.conclusion.level, "switch")
+        self.assertIn("VPN · X", v.conclusion.text)
+
+    def test_window_leaves_older_minutes_out(self):
+        old_bad = [mp(self.NOW - 3000 - 60 * i, 20) for i in range(3)]
+        recent = [mp(self.NOW - 60 * (i + 1), 0) for i in range(10)]
+        v = self.view(old_bad + recent, on_vpn=False, window=900)
+        self.assertEqual(v.conclusion.level, "ok")
+        v = self.view(old_bad + recent, on_vpn=False, window=3600)
+        self.assertEqual(v.conclusion.level, "switch")
+
+
+    def test_few_clean_watched_minutes_are_not_enough(self):
+        v = self.view(self.vpn_minutes(20), self.watch(advice.RECENT_MIN_CLEAN - 1))
+        self.assertEqual(v.conclusion.level, "unknown")

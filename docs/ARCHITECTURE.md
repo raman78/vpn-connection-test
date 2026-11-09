@@ -212,10 +212,46 @@ When recording stops, the probe thread finishes the ping in progress and
 starts no other (`stop` in `run_serial_per_path` and `trace_route`); the
 skipped pings are not written at all rather than written as failures.
 
-Every `TRACE_PERIOD_S` (300 s) — and for all targets at once after a mark —
-`tracepath -n` to each connection target, then a ping to every hop that
-answered (`hops.csv`). tracepath cannot be bound to an interface, so a
-route always describes the path the system routes over at that moment.
+### Route traces
+
+When: every `TRACE_PERIOD_S` (300 s) for the connection targets; after a
+mark for all targets; and **at once after a direct-path monitor minute
+(§5a) lost `CAL_PING_BAD_PCT` or more of at least `LOSS_TRACE_MIN_PINGS`
+pings** (event `watch-loss`), at most once per server every
+`LOSS_TRACE_COOLDOWN_S` (120 s) — the loss is most likely still there, and
+the trace says where it starts.
+
+How (`Engine._trace_paths`):
+
+- **The direct path, through every direct interface** —
+  `probes.trace_via`: `ping -I <iface> -t <ttl>` for ttl 1, 2, …; the router
+  that many hops away answers "Time to live exceeded", the target answers
+  normally. Two tries per hop. It needs no privileges and, being bound to
+  the interface, it traces the direct path even while a VPN is up — which
+  `tracepath` cannot (it has no interface option). It also reaches servers
+  tracepath does not: on the AION 2 server, tracepath stopped at hop 9, the
+  TTL probe reached hop 11 (verified 2026-11-09). Every answering hop is
+  then pinged (`PING_COUNT`) through the same interface, one at a time.
+- **With a VPN up, also the system's route** (the tunnel) with
+  `tracepath -n`, hops pinged one at a time as before.
+
+Both write `hops.csv` (the path column tells them apart). Each direct trace
+is then judged (`probes.classify_route`) and written to `routes.csv`, and
+as a `route` event:
+
+| Verdict | Hop pings (a hop is losing at `HOP_LOSSY_PCT` 10 %, 2 of 20) |
+|---|---|
+| `real` | loss starts at a hop and continues on every later answering hop to the server — loss on the path; the starting hop is named |
+| `target-only` | only the server loses — the last segment, or the server limiting ping |
+| `hop-limit` | the server is clean; single hops before it lose — those routers limit their own ping replies, the path is fine |
+| `clean` | nothing loses |
+| `no-answer` | the server does not answer ping; the route cannot be judged |
+| `error` | the trace failed (the reason is in the text) |
+
+Hops that answer no ping at all (0 of 20) are skipped, not counted as
+losing: many routers never answer. The starting hop's reverse-DNS name is
+added when the system resolver has one (`probes.reverse_name`, cached) —
+no address is sent to an outside lookup service.
 
 ## 5a. Direct-path monitor
 
@@ -266,12 +302,14 @@ interrupted session keeps everything up to its last second.
 | `probes.csv` | ping | time, target, role, bound, interface, path, sent, received, `loss_pct`, `rtt_min/avg/max`, error |
 | `hops.csv` | hop × trace | time, target, path, hop, address, sent, received, `loss_pct`, `rtt_avg`, error |
 | `monitor.csv` | minute × monitored server × direct interface | §5a |
+| `routes.csv` | judged direct trace | time, target, interface, path, trigger (`schedule`, `mark`, `watch-loss`), verdict, start_hop, start_address, target_loss_pct, hops, text (§5) |
 | `events.log` | event | time, kind, text |
 
 Event kinds: `start`, `stop`, `watch`, `closed`, `path-change`,
 `counters-reset`, `interfaces`, `capture-start`, `capture-stop`,
 `capture-error`, `monitor-start`, `monitor-stop`, `monitor-error`,
-`probe-error`, `probe-skip`, `trace-error`, `mark`, `error`.
+`watch-loss`, `route`, `probe-error`, `probe-skip`, `trace-error`, `mark`,
+`error`.
 
 Addresses and names only; no packet content.
 
@@ -303,6 +341,14 @@ how many of those minutes the traffic to that server used a VPN (`on VPN`)
 and how many of them the direct path was bad (`bad then`): the minutes in
 which the VPN actually spared the connection something.
 
+Each bad monitor minute is checked against the first direct trace of the
+same server and interface made during it or within `ROUTE_WINDOW_S`
+(240 s) after it (`report.route_verdict_for`): **real** when the trace saw
+`real` or `target-only` loss, **dismissed** when it saw only `hop-limit`,
+otherwise unverified (no trace in time, or `clean` — the loss may simply
+have ended). A ping that a single router limits is the one way ping loss
+misleads; this is where it is caught.
+
 **CALIBRATION** asks whether ping on the direct path can stand in for TCP
 loss at all, before anything relies on it. It pairs each full monitor
 minute with the TCP minute of the connections to the same server on the
@@ -332,9 +378,10 @@ The window has two views, switched by **Advanced** in its header:
 
 - **Overview** — the answer to "which path should I play on?" for one
   service (the busiest one with enough judged minutes is chosen first):
-  a banner with the live hint (§10) and the path in use; one card per tested
-  path (`advice.path_cards`) with four numbers; the chart; the
-  recommendation's headline. The cards read the all-sessions summary by
+  a banner with the live hint (§10) and the path in use; the **Recently**
+  panel (`advice.recent_view`, §10) for the last 15 min / 1 h / 3 h of this
+  session; one card per tested path (`advice.path_cards`) with four numbers;
+  the chart; the recommendation's headline. The cards read the all-sessions summary by
   default ("This session" switches to the current session's).
 - **Advanced** — everything else: status, the full comparison table,
   calibration, the recommendation's reasoning, the last probes, events,
@@ -447,10 +494,19 @@ judged. The criterion is the project's: a VPN is worth it if it keeps loss
 near zero in the periods the direct path is bad, at an acceptable latency;
 without bad periods the direct path wins.
 
-1. **Direct-path exposure**: judged minutes of direct traffic, plus — only
-   once ping is confirmed as a stand-in — the watched minutes while on the
-   VPN. Bad minutes counted the same way. Unconfirmed watch minutes are
-   listed with the reason they were not counted.
+1. **Direct-path exposure**: judged minutes of direct traffic, plus the
+   direct-path monitor's minutes while on the VPN — counted when ping is
+   confirmed as a stand-in, **provisionally** while the calibration has not
+   yet seen the bad minutes it needs, and not at all once it is refuted.
+   Of the monitor's bad minutes, those a route trace dismissed are not
+   counted (§8). The evidence is asymmetric, which is why this is
+   defensible before calibration: a clean ping minute is strong evidence
+   (the connection's packets take the same route, so loss on it would show),
+   a lossy one is weaker (routers may limit ping) — and the weak case is
+   the one the trace checks. A recommendation resting on unconfirmed ping
+   is headed "Provisional (direct path partly judged by ping)", and its
+   reasoning lists how many bad minutes were confirmed, dismissed and
+   unverified.
 2. **Not enough data** below `REC_MIN_DIRECT_MINUTES` (120) of exposure or
    `REC_MIN_SESSIONS` (3) sessions with it: one evening can be all calm or
    all bad, and the answer depends on how often bad evenings come.
@@ -470,6 +526,29 @@ without bad periods the direct path wins.
 
 `vpnct report` ends with the same recommendation over the sessions it was
 given.
+
+### Recently (`advice.recent_view`, window)
+
+What each path did over the last 15 min, 1 h or 3 h of this session, from
+the window's in-memory history: per path of the connection's own traffic,
+judged minutes, minutes with loss and ping; while on a VPN, the direct-path
+monitor's minutes and lost-ping minutes; the latest route verdict. Then one
+conclusion:
+
+| Traffic on | Situation | Conclusion |
+|---|---|---|
+| VPN | the VPN server lost packets in `RECENT_BAD` (2)+ minutes | try another server or the direct path |
+| VPN | the direct path lost pings in 2+ minutes, a trace saw real loss (or none ran yet — then said so) | the VPN spared you this, with where loss starts |
+| VPN | the direct path lost pings, but the trace saw only routers limiting replies | the direct path itself looked fine |
+| VPN | the direct path clean for all of at least `RECENT_MIN_CLEAN` (10) watched minutes | the VPN is not needed right now, with its RTT cost |
+| direct | 2+ minutes with loss | switch to the VPN, naming the best one so far |
+| direct | otherwise | stable |
+
+The RTT cost and the best VPN come from the cards (all sessions, the
+connection's own RTT on both paths): the monitor's ping RTT is not
+comparable with a TCP connection's RTT, which also counts delayed
+acknowledgements (measured: 17.5 ms ping against 32 ms TCP to the same
+server).
 
 ## 11. Failure modes
 
