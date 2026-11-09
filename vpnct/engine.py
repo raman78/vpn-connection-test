@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 from . import __version__, interfaces, probes, ss
 from .capture import CaptureManager, MinuteRow
+from .monitor import MONITOR_MAX_TARGETS, MonitorManager, MonitorMinute
 from .interfaces import NetPath, PathMap
 from .session import Session, iso
 from .tracker import Delta, Event, Selection, Tracker
@@ -91,6 +92,7 @@ class Snapshot:
     last_minute: list[MinuteRow]
     last_probes: list[dict]
     recent_events: list[str]
+    last_monitor: list[MonitorMinute]
     paths: list[str] = field(default_factory=list)
 
 
@@ -113,6 +115,9 @@ class Engine:
         }, self.started, session_root)
         self.tracker = Tracker(selection)
         self.captures = CaptureManager(self._capture_event)
+        self.monitors = MonitorManager(self._capture_event)
+        self._default_devs: set[str] = set()
+        self._last_monitor: list[MonitorMinute] = []
         self.paths = PathMap([], {})
         self._nm_names: dict[str, str] = {}
         self._nm_at = 0.0
@@ -146,6 +151,7 @@ class Engine:
     def _refresh_paths(self, now: float) -> None:
         if now - self._nm_at >= NM_REFRESH_S:
             self._nm_names = interfaces.read_nm_active()
+            self._default_devs = interfaces.read_default_route_devices()
             self._nm_at = now
         itfs = interfaces.read_interfaces()
         candidate = PathMap(itfs, self._nm_names)
@@ -153,6 +159,7 @@ class Engine:
             # The device set changed: re-read NetworkManager's names now, so a
             # VPN server switch is labelled with the new server at once.
             self._nm_names = interfaces.read_nm_active()
+            self._default_devs = interfaces.read_default_route_devices()
             self._nm_at = now
             candidate = PathMap(itfs, self._nm_names)
             if self._signature is not None:
@@ -171,7 +178,17 @@ class Engine:
             deltas, events = self.tracker.update(sockets, self.paths, now)
             for t in self.tracker.watched():
                 self._key_info[t.last.key] = (t.program, t.path)
-            wanted = {t.last.key: t.path.interface for t in self.tracker.select_captured(now)}
+            captured = self.tracker.select_captured(now)
+            wanted = {t.last.key: t.path.interface for t in captured}
+            # Direct-path monitor: the busiest captured connections' servers,
+            # pinged through every direct interface, whichever path the
+            # traffic itself is on.
+            hosts: list[str] = []
+            for t in sorted(captured, key=lambda t: t.rate(now), reverse=True):
+                if t.last.remote_ip not in hosts and len(hosts) < MONITOR_MAX_TARGETS:
+                    hosts.append(t.last.remote_ip)
+            monitor_wanted = {(h, d.name) for h in hosts
+                              for d in self.paths.direct_interfaces(self._default_devs)}
         for e in events:
             self._event(e.time, e.kind, e.text)
         points = []
@@ -183,6 +200,21 @@ class Engine:
             self._updates += points
         self.captures.update(wanted, now)
         self._write_minutes(self.captures.take_rows(now))
+        self.monitors.update(monitor_wanted, now)
+        self._write_monitor(self.monitors.take_rows(now))
+
+    def _write_monitor(self, rows: list[MonitorMinute]) -> None:
+        if not rows:
+            return
+        for r in rows:
+            self.session.write("monitor.csv", {
+                "minute": iso(r.minute), "target": r.target, "interface": r.interface,
+                "path": self.paths.path_for_interface(r.interface).label,
+                "covered_s": r.covered_s, "sent": r.sent, "received": r.received,
+                "loss_pct": r.loss_pct, "rtt_p50": r.rtt_p50, "rtt_max": r.rtt_max,
+            })
+        with self._lock:
+            self._last_monitor = rows
 
     def _write_sample(self, d: Delta) -> None:
         lip, lport, rip, rport = d.key
@@ -375,6 +407,7 @@ class Engine:
         self._stop.set()
         self._probe_requests.put("stop")
         self._write_minutes(self.captures.stop_all(time.time()))
+        self._write_monitor(self.monitors.stop_all(time.time()))
         if self._probe_thread is not None:
             self._probe_thread.join(timeout=30)
         self._event(time.time(), "stop", f"session {self.session.dir} closed")
@@ -401,4 +434,4 @@ class Engine:
                         conns, self.tracker.unwatched_count(), self.tracker.skipped_local,
                         self.captures.status(), list(self._last_minute),
                         list(self._last_probes), list(self._recent_events[-10:]),
-                        sorted({c.path for c in conns}))
+                        list(self._last_monitor), sorted({c.path for c in conns}))

@@ -88,6 +88,16 @@ the route. Each session is a directory under
 `~/.local/share/vpn-connection-test/sessions/` with plain CSV files and an
 event log; `docs/ARCHITECTURE.md` explains every column.
 
+**Watching the direct path while on the VPN.** Throughout a recording, the
+program pings the server you are connected to once a second through your
+normal connection, bypassing the VPN. So while you play through the VPN it
+still knows whether the direct route would be losing packets right now — the
+comparison is made in the same minutes, not between an evening on one path
+and an evening on the other. Whether this ping is a good enough stand-in
+for the game's own losses is checked from the minutes you play directly;
+the report and the window say "unconfirmed" until enough bad minutes have
+been seen to tell.
+
 **Ping through a VPN.** Some VPN servers limit ping (ICMP) per user; Proton's
 free servers drop nearly all of it as soon as two pings run at once. The
 recorder therefore pings one target at a time over each path, and the

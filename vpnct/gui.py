@@ -402,6 +402,11 @@ class Window(QMainWindow):
                              f" of {data} packets")
             else:
                 lines.append(f"{key[0]} :{key[1]}: no live connection right now")
+        for m in snap.last_monitor:
+            loss = f"{m.loss_pct:.0f} %" if m.loss_pct is not None else "-"
+            rtt = f"{m.rtt_p50:.0f} ms" if m.rtt_p50 is not None else "-"
+            lines.append(f"Direct path watch: ping {m.target} via {m.interface} — last minute "
+                         f"{loss} lost of {m.sent}, RTT {rtt}")
         self.status.setText("<br>".join(lines))
 
     def refresh_probes(self, snap) -> None:
@@ -442,7 +447,9 @@ class Window(QMainWindow):
         sessions = 1 + len(self.extra_sessions)
         self.cmp_title.setText(f"<b>Comparison of paths</b> — {key[0]} :{key[1]}, "
                                f"{sessions} session(s), same numbers as <tt>vpnct report</tt>")
-        self.verdict.setText("<br>".join(report.compare_paths(paths)) if paths else "no data yet")
+        lines = report.compare_paths(paths) if paths else ["no data yet"]
+        lines.append("Ping as a stand-in for TCP loss: " + s["calibration"].describe())
+        self.verdict.setText("<br>".join(lines))
 
     def pick_sessions(self) -> None:
         dlg = SessionPicker(self, self.engine.session.dir.name, self.extra_sessions)

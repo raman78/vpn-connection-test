@@ -12,7 +12,12 @@ Numbers and where they come from:
 - loss: retransmissions by the remote end per captured data packet
   (`losses.csv`), and per minute of capture; gaps alongside;
 - probes and hops: ping results per target and path (`probes.csv`,
-  `hops.csv`). A hop that drops pings while later hops do not is rate
+  `hops.csv`);
+- direct-path monitor (`monitor.csv`): per target and minute, ping loss on
+  the direct path — also in the minutes the traffic itself used a VPN;
+- calibration: in minutes where the traffic used the direct path, ping loss
+  of the monitor next to the connection's TCP loss to the same server, to
+  establish whether ping can stand in for TCP loss at all. A hop that drops pings while later hops do not is rate
   limiting its own replies, not losing traffic — read hop loss together with
   the hops after it.
 """
@@ -88,12 +93,113 @@ class ProbeGroup:
         return bool(self.losses) and self.replies == 0
 
 
+CAL_TCP_BAD_PCT = 0.5        # a minute with at least this TCP loss is "bad"
+CAL_PING_BAD_PCT = 3.0       # ping loss counted as "the path is losing" (2+ of 60)
+CAL_MIN_DATA = 100           # data packets a minute needs to judge its TCP loss
+CAL_MIN_PINGS = 50
+CAL_MIN_COVER_S = 55
+CAL_MIN_BAD = 5              # bad TCP minutes needed before a verdict on ping
+CAL_SENSITIVITY = 0.8        # share of bad TCP minutes ping must flag
+CAL_PRECISION = 0.7          # share of ping alarms that must be real
+
+
+@dataclass
+class MonitorGroup:
+    minutes: int = 0
+    bad: int = 0
+    losses: list = field(default_factory=list)
+    rtts: list = field(default_factory=list)
+    minutes_on_vpn: int = 0      # traffic to this server used a VPN in that minute
+    bad_on_vpn: int = 0
+    short: int = 0               # minutes not fully covered or with too few pings
+
+
+@dataclass
+class Calibration:
+    pairs: int = 0
+    tcp_bad: int = 0
+    ping_bad: int = 0
+    both: int = 0
+
+    @property
+    def sensitivity(self) -> float | None:
+        return self.both / self.tcp_bad if self.tcp_bad else None
+
+    @property
+    def precision(self) -> float | None:
+        return self.both / self.ping_bad if self.ping_bad else None
+
+    @property
+    def status(self) -> str:
+        """'confirmed', 'refuted' or 'unconfirmed' — ping as a stand-in for TCP loss."""
+        if self.tcp_bad < CAL_MIN_BAD:
+            return "unconfirmed"
+        ok = (self.sensitivity >= CAL_SENSITIVITY
+              and self.precision is not None and self.precision >= CAL_PRECISION)
+        return "confirmed" if ok else "refuted"
+
+    def describe(self) -> str:
+        head = (f"{self.pairs} paired minute(s) on the direct path; TCP lost >= "
+                f"{CAL_TCP_BAD_PCT}% in {self.tcp_bad}, ping lost >= {CAL_PING_BAD_PCT:.0f}% in "
+                f"{self.ping_bad}, both in {self.both}")
+        if self.status == "unconfirmed":
+            return (f"{head}. UNCONFIRMED: ping can stand in for TCP loss only after "
+                    f"{CAL_MIN_BAD} bad TCP minutes have been seen ({self.tcp_bad} so far)")
+        sens = f"{100 * self.sensitivity:.0f}%"
+        prec = f"{100 * self.precision:.0f}%" if self.precision is not None else "-"
+        word = "CONFIRMED" if self.status == "confirmed" else "NOT RELIABLE"
+        return (f"{head}. {word}: ping flagged {sens} of the bad TCP minutes "
+                f"(need {100 * CAL_SENSITIVITY:.0f}%), and {prec} of its alarms were real "
+                f"(need {100 * CAL_PRECISION:.0f}%)")
+
+
+def _host(endpoint: str) -> str:
+    return endpoint.rpartition(":")[0].strip("[]")
+
+
 def summarise(session_dirs: list[Path]) -> dict:
     groups: dict[tuple, Group] = defaultdict(Group)
     probe_groups: dict[tuple, ProbeGroup] = defaultdict(ProbeGroup)
     hop_groups: dict[tuple, ProbeGroup] = defaultdict(ProbeGroup)
     marks: list[str] = []
+    monitor_groups: dict[tuple, MonitorGroup] = defaultdict(MonitorGroup)
+    calibration = Calibration()
     for d in session_dirs:
+        # TCP per (minute, interface, server host), and which minutes each
+        # server's traffic used a VPN, for the monitor and the calibration.
+        tcp: dict[tuple, list] = defaultdict(lambda: [0, 0, 60.0])
+        on_vpn: set[tuple] = set()
+        for r in _read(d / "losses.csv"):
+            k = (r["minute"], r["interface"], _host(r["remote"]))
+            agg = tcp[k]
+            agg[0] += int(r["data_pkts"])
+            agg[1] += int(r["retrans"])
+            agg[2] = min(agg[2], float(r["covered_s"]))
+            if r["path"].startswith("vpn:") and int(r["data_pkts"]) > 0:
+                on_vpn.add((r["minute"], _host(r["remote"])))
+        for r in _read(d / "monitor.csv"):
+            mg = monitor_groups[(r["target"], r["path"])]
+            sent, cover = int(r["sent"] or 0), float(r["covered_s"] or 0)
+            if sent < CAL_MIN_PINGS or cover < CAL_MIN_COVER_S:
+                mg.short += 1
+                continue
+            loss = float(r["loss_pct"])
+            bad = loss >= CAL_PING_BAD_PCT
+            mg.minutes += 1
+            mg.bad += bad
+            mg.losses.append(loss)
+            if _f(r["rtt_p50"]) is not None:
+                mg.rtts.append(float(r["rtt_p50"]))
+            if (r["minute"], r["target"]) in on_vpn:
+                mg.minutes_on_vpn += 1
+                mg.bad_on_vpn += bad
+            t = tcp.get((r["minute"], r["interface"], r["target"]))
+            if t and t[0] >= CAL_MIN_DATA and t[2] >= CAL_MIN_COVER_S:
+                tcp_bad = 100.0 * t[1] / t[0] >= CAL_TCP_BAD_PCT
+                calibration.pairs += 1
+                calibration.tcp_bad += tcp_bad
+                calibration.ping_bad += bad
+                calibration.both += tcp_bad and bad
         for r in _read(d / "samples.csv"):
             g = groups[(r["program"], _port(r["remote"]), r["path"])]
             g.stamps.add((d.name, r["time"]))
@@ -140,7 +246,8 @@ def summarise(session_dirs: list[Path]) -> dict:
         events = d / "events.log"
         if events.exists():
             marks += [line.rstrip() for line in events.read_text().splitlines() if " mark " in line]
-    return {"groups": groups, "probes": probe_groups, "hops": hop_groups, "marks": marks}
+    return {"groups": groups, "probes": probe_groups, "hops": hop_groups, "marks": marks,
+            "monitor": monitor_groups, "calibration": calibration}
 
 
 MIN_MINUTES_FOR_VERDICT = 5.0
@@ -226,6 +333,23 @@ def format_report(summary: dict) -> str:
             continue
         out.append(f"  {program} :{port}")
         out += [f"    {line}" for line in compare_paths(paths)]
+    out.append("")
+    out.append("DIRECT-PATH MONITOR (1 ping/s per server through the direct interface,")
+    out.append(f"whichever path the traffic used; a bad minute loses >= {CAL_PING_BAD_PCT:.0f}% of its pings)")
+    header = (f"{'target':<18} {'path':<36} {'minutes':>7} {'bad':>5} {'loss avg':>8} "
+              f"{'RTT med':>8} {'on VPN':>7} {'bad then':>8} {'short':>6}")
+    out.append(header)
+    out.append("-" * len(header))
+    for (target, path), mg in sorted(summary["monitor"].items()):
+        out.append(f"{target:<18} {path[:36]:<36} {mg.minutes:>7} {mg.bad:>5} "
+                   f"{_n(statistics.fmean(mg.losses) if mg.losses else None):>8} "
+                   f"{_n(statistics.median(mg.rtts) if mg.rtts else None):>8} "
+                   f"{mg.minutes_on_vpn:>7} {mg.bad_on_vpn:>8} {mg.short:>6}")
+    if not summary["monitor"]:
+        out.append("(no monitor data: no captured connection, or no direct interface)")
+    out.append("")
+    out.append("CALIBRATION (can ping on the direct path stand in for TCP loss?)")
+    out.append("  " + summary["calibration"].describe())
     out.append("")
     out.append("PROBES (ping; 'bound' = sent through that interface explicitly)")
     header = (f"{'target':<18} {'role':<22} {'path':<36} {'bound':>5} {'rounds':>6} "

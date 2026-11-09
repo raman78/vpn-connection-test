@@ -50,6 +50,7 @@ inputs; AION 2 is only the first case.
 | `vpnct/tracker.py` | connections over time, per-second deltas, which ones are watched |
 | `vpnct/capture.py` | header-only capture pipelines and per-minute loss counts |
 | `vpnct/probes.py` | ping and tracepath, with their outputs parsed |
+| `vpnct/monitor.py` | continuous 1/s ping of the direct path to the busiest servers |
 | `vpnct/session.py` | session directory, CSV files, event log |
 | `vpnct/engine.py` | `Engine`: the loop that ties it together; `snapshot()` for a display |
 | `vpnct/report.py` | summary of one or more sessions; `compare_paths` |
@@ -215,6 +216,34 @@ Every `TRACE_PERIOD_S` (300 s) — and for all targets at once after a mark —
 answered (`hops.csv`). tracepath cannot be bound to an interface, so a
 route always describes the path the system routes over at that moment.
 
+## 5a. Direct-path monitor
+
+Comparing a direct period with a VPN period compares two times, not two
+paths: a route's bad periods come and go within minutes, so whichever path
+happened to get the calm stretch looks better. The monitor measures the
+direct path **in the same minutes** the traffic uses the VPN.
+
+`MonitorManager` (in `Engine.step`) keeps one `ping -D -O -i 1 -W 1 -I
+<direct iface> <server>` running per pair of:
+
+- server: the remote hosts of the busiest captured connections, at most
+  `MONITOR_MAX_TARGETS` (2) — for a game, its server;
+- direct interface: every non-VPN interface with a default route.
+
+It runs whichever path the traffic itself is on. The direct path is not
+rate limited the way the tunnel is (§5), so a steady 1/s stream measures
+the path; Proton's kill switch lets it through (verified 2026-11-09: 60 of
+60 replies a minute while the game ran through the tunnel). A new server
+(the game reconnects elsewhere) starts a new ping and stops the old one
+(`monitor-start` / `monitor-stop` events).
+
+`monitor.csv`, per server, interface and minute: pings sent in that minute,
+replies, loss %, RTT median and maximum, `covered_s`. A ping belongs to the
+minute it was sent in — a reply's send time is its arrival minus its RTT,
+a miss's is ping's "no answer yet" minus the wait — and a reply that comes
+after its miss turns the miss back into a reply. A minute in which no ping
+went out is a row with `sent` 0, not a missing row.
+
 ## 6. Marks
 
 `vpnct mark` (or the display's button) records "it stutters now" in
@@ -235,11 +264,13 @@ interrupted session keeps everything up to its last second.
 | `losses.csv` | minute × captured connection | §4 |
 | `probes.csv` | ping | time, target, role, bound, interface, path, sent, received, `loss_pct`, `rtt_min/avg/max`, error |
 | `hops.csv` | hop × trace | time, target, path, hop, address, sent, received, `loss_pct`, `rtt_avg`, error |
+| `monitor.csv` | minute × monitored server × direct interface | §5a |
 | `events.log` | event | time, kind, text |
 
 Event kinds: `start`, `stop`, `watch`, `closed`, `path-change`,
 `counters-reset`, `interfaces`, `capture-start`, `capture-stop`,
-`capture-error`, `probe-error`, `probe-skip`, `trace-error`, `mark`, `error`.
+`capture-error`, `monitor-start`, `monitor-stop`, `monitor-error`,
+`probe-error`, `probe-skip`, `trace-error`, `mark`, `error`.
 
 Addresses and names only; no packet content.
 
@@ -263,6 +294,27 @@ second and each captured minute once.
 - **Hops**: loss that continues to the last hop is real; loss at one hop
   only is that router limiting its own replies.
 
+**DIRECT-PATH MONITOR** summarises `monitor.csv` per server and direct
+path: full minutes (at least `CAL_MIN_PINGS` 50 pings and `CAL_MIN_COVER_S`
+55 s; the rest are counted as `short`), bad minutes (ping loss at least
+`CAL_PING_BAD_PCT` 3 %, i.e. two or more of 60), and — the point of it —
+how many of those minutes the traffic to that server used a VPN (`on VPN`)
+and how many of them the direct path was bad (`bad then`): the minutes in
+which the VPN actually spared the connection something.
+
+**CALIBRATION** asks whether ping on the direct path can stand in for TCP
+loss at all, before anything relies on it. It pairs each full monitor
+minute with the TCP minute of the connections to the same server on the
+same interface (at least `CAL_MIN_DATA` 100 data packets) — possible only
+while the traffic itself goes directly. A TCP minute is bad at
+`CAL_TCP_BAD_PCT` (0.5 %) retransmissions. Until `CAL_MIN_BAD` (5) bad
+TCP minutes have been seen the status is **unconfirmed**; after that it is
+**confirmed** when ping flagged at least `CAL_SENSITIVITY` (80 %) of the
+bad TCP minutes and at least `CAL_PRECISION` (70 %) of its alarms were
+real, and **not reliable** otherwise. The one earlier case (17 Oct 2026:
+14–22 % ping loss with 13 % TCP loss) suggests it will hold, but one case
+is not a measurement.
+
 Under the table, **COMPARISON** states, for each service, how each VPN path
 compares with each direct path (`report.compare_paths`): a path with fewer
 than `MIN_MINUTES_FOR_VERDICT` (5) captured minutes gets "not enough data
@@ -283,6 +335,8 @@ extra RTT), or whether the VPN lost more. The window shows the same lines.
   pid in `$XDG_RUNTIME_DIR/vpn-connection-test.pid` is alive. Two
   recorders would ping through one tunnel at once (§5). The window also
   answers `vpnct mark` through the same pidfile.
+- **Direct path watch**: the status shows the monitor's last minute per
+  server; the calibration status is shown under the comparison.
 - **Live data**: every second the window takes `Engine.drain_updates()` —
   one `SecondPoint` per watched connection and second, one `MinutePoint` per
   captured connection and minute — into an in-memory history (3 h) per
