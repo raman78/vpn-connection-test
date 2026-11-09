@@ -364,7 +364,7 @@ not felt); loss only breaks a tie. The badge says which ("most stable" or
 count only sessions with judged minutes on that path, the same basis as the
 recommendation.
 
-Look: a fixed light theme (`THEME`, `STYLE`, `apply_theme`: Fusion style,
+Look: a fixed dark theme (`THEME`, `STYLE`, `apply_theme`: Fusion style,
 palette and one stylesheet), so the window is the same on any desktop
 theme; the chart is painted with the same colours.
 

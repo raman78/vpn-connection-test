@@ -52,19 +52,20 @@ HISTORY_S = 3 * 3600
 LOSS_RED_PCT = 2.0
 SPANS = [("10 min", 600), ("30 min", 1800), ("1 h", 3600), ("3 h", 3 * 3600)]
 
-GREEN, YELLOW, RED, GREY = "#16a34a", "#d97706", "#dc2626", "#94a3b8"
+GREEN, YELLOW, RED, GREY = "#22c55e", "#f59e0b", "#ef4444", "#64748b"
 
-# One light theme, set explicitly so the window looks the same on any desktop.
+# One dark theme, set explicitly so the window looks the same on any desktop.
 THEME = {
-    "bg": "#f1f5f9", "card": "#ffffff", "border": "#e2e8f0", "grid": "#eef2f6",
-    "text": "#0f172a", "muted": "#64748b", "accent": "#2563eb",
+    "bg": "#0b1120", "card": "#151d2e", "border": "#243049", "grid": "#1e293b",
+    "text": "#e2e8f0", "muted": "#8b9ab3", "accent": "#3b82f6", "accent_hover": "#60a5fa",
+    "on_accent": "#ffffff", "raised": "#1e293b",
     "good": GREEN, "warn": YELLOW, "bad": RED, "idle": GREY,
-    "good_bg": "#f0fdf4", "warn_bg": "#fffbeb", "bad_bg": "#fef2f2", "info_bg": "#eff6ff",
-    "idle_bg": "#f8fafc",
+    "good_bg": "#0f2a1d", "warn_bg": "#2e2210", "bad_bg": "#321317", "info_bg": "#11233f",
+    "idle_bg": "#151d2e",
 }
-DIRECT_SHADE = QColor(100, 116, 139, 34)
-VPN_SHADES = [QColor(37, 99, 235, 34), QColor(147, 51, 234, 34), QColor(13, 148, 136, 34),
-              QColor(234, 88, 12, 34)]
+DIRECT_SHADE = QColor(148, 163, 184, 30)
+VPN_SHADES = [QColor(59, 130, 246, 44), QColor(168, 85, 247, 44), QColor(20, 184, 166, 44),
+              QColor(249, 115, 22, 44)]
 
 STYLE = f"""
 QMainWindow, QWidget#page {{ background: {THEME['bg']}; }}
@@ -72,29 +73,38 @@ QWidget {{ color: {THEME['text']}; }}
 QFrame#card {{ background: {THEME['card']}; border: 1px solid {THEME['border']}; border-radius: 14px; }}
 QFrame#card[best="true"] {{ border: 2px solid {THEME['accent']}; }}
 QFrame#banner {{ border-radius: 14px; border: 1px solid {THEME['border']}; }}
+QLabel {{ background: transparent; }}
 QLabel#muted, QLabel#subtitle {{ color: {THEME['muted']}; }}
 QLabel#h1 {{ font-size: 15pt; font-weight: 600; }}
 QLabel#h2 {{ font-size: 11pt; font-weight: 600; }}
 QLabel#big {{ font-size: 17pt; font-weight: 600; }}
-QLabel#badge {{ background: {THEME['accent']}; color: white; border-radius: 9px;
+QLabel#badge {{ background: {THEME['accent']}; color: {THEME['on_accent']}; border-radius: 9px;
                padding: 2px 9px; font-weight: 600; }}
-QLabel#badge[kind="muted"] {{ background: {THEME['grid']}; color: {THEME['muted']}; }}
-QLabel#badge[kind="now"] {{ background: {THEME['text']}; }}
+QLabel#badge[kind="muted"] {{ background: {THEME['raised']}; color: {THEME['muted']}; }}
 QLabel#pill {{ background: {THEME['card']}; border: 1px solid {THEME['border']}; border-radius: 11px;
               padding: 3px 11px; color: {THEME['muted']}; }}
-QPushButton {{ background: {THEME['card']}; border: 1px solid {THEME['border']}; border-radius: 9px;
-              padding: 6px 14px; }}
+QPushButton {{ background: {THEME['raised']}; border: 1px solid {THEME['border']}; border-radius: 9px;
+              padding: 6px 14px; color: {THEME['text']}; }}
 QPushButton:hover {{ border-color: {THEME['accent']}; }}
-QPushButton#primary {{ background: {THEME['accent']}; color: white; border: none; font-weight: 600; }}
-QPushButton#primary:hover {{ background: #1d4ed8; }}
-QPushButton:checked {{ background: {THEME['text']}; color: white; border-color: {THEME['text']}; }}
-QComboBox {{ background: {THEME['card']}; border: 1px solid {THEME['border']}; border-radius: 9px;
-            padding: 5px 10px; min-width: 220px; font-weight: 600; }}
+QPushButton:checked {{ background: {THEME['accent']}; color: {THEME['on_accent']}; border-color: {THEME['accent']}; }}
+QPushButton:checked:hover {{ background: {THEME['accent_hover']}; }}
+QComboBox {{ background: {THEME['raised']}; border: 1px solid {THEME['border']}; border-radius: 9px;
+            padding: 5px 10px; min-width: 220px; font-weight: 600; color: {THEME['text']}; }}
+QComboBox QAbstractItemView {{ background: {THEME['card']}; color: {THEME['text']};
+                              selection-background-color: {THEME['accent']}; }}
 QTableWidget, QListWidget {{ background: {THEME['card']}; border: 1px solid {THEME['border']};
-                            border-radius: 10px; gridline-color: {THEME['grid']}; }}
-QHeaderView::section {{ background: {THEME['idle_bg']}; border: none;
+                            border-radius: 10px; gridline-color: {THEME['grid']}; color: {THEME['text']}; }}
+QTableWidget QTableCornerButton::section {{ background: {THEME['raised']}; border: none; }}
+QHeaderView::section {{ background: {THEME['raised']}; border: none;
                         border-bottom: 1px solid {THEME['border']}; padding: 4px; color: {THEME['muted']}; }}
 QScrollArea {{ border: none; background: transparent; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
+QScrollBar:horizontal, QScrollBar:vertical {{ background: {THEME['bg']}; border: none; }}
+QScrollBar::handle {{ background: {THEME['border']}; border-radius: 4px; min-width: 24px; min-height: 24px; }}
+QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; }}
+QSplitter::handle {{ background: transparent; }}
+QToolTip {{ background: {THEME['raised']}; color: {THEME['text']}; border: 1px solid {THEME['border']}; }}
+QDialog {{ background: {THEME['bg']}; }}
 """
 
 
@@ -1049,16 +1059,16 @@ class App:
 
 
 def apply_theme(qapp: QApplication) -> None:
-    """Light theme for every desktop: Fusion style, palette and stylesheet."""
+    """Dark theme for every desktop: Fusion style, palette and stylesheet."""
     qapp.setStyle("Fusion")
     pal = QPalette()
     for role, colour in ((QPalette.ColorRole.Window, THEME["bg"]), (QPalette.ColorRole.Base, THEME["card"]),
                          (QPalette.ColorRole.AlternateBase, THEME["idle_bg"]),
                          (QPalette.ColorRole.Text, THEME["text"]), (QPalette.ColorRole.WindowText, THEME["text"]),
-                         (QPalette.ColorRole.Button, THEME["card"]), (QPalette.ColorRole.ButtonText, THEME["text"]),
+                         (QPalette.ColorRole.Button, THEME["raised"]), (QPalette.ColorRole.ButtonText, THEME["text"]),
                          (QPalette.ColorRole.Highlight, THEME["accent"]),
-                         (QPalette.ColorRole.HighlightedText, "#ffffff"),
-                         (QPalette.ColorRole.ToolTipBase, THEME["card"]),
+                         (QPalette.ColorRole.HighlightedText, THEME["on_accent"]),
+                         (QPalette.ColorRole.ToolTipBase, THEME["raised"]),
                          (QPalette.ColorRole.ToolTipText, THEME["text"]),
                          (QPalette.ColorRole.PlaceholderText, THEME["muted"])):
         pal.setColor(role, QColor(colour))
