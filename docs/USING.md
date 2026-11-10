@@ -116,7 +116,11 @@ server's public address, outside the tunnel. If the pings jump outside the
 tunnel too, the jumps start on the way to the VPN server; if they jump only
 inside, the VPN server itself adds them — busy free servers do. If neither
 jumps, the jumps you see come from further on, between the VPN server and
-the game. Typical conclusions:
+the game. If the program could not find the server's public address (a VPN
+that is not a WireGuard connection in your network settings), the line says
+where the jumps start cannot be told.
+
+Typical conclusions:
 
 | Conclusion | What it means |
 |---|---|
@@ -126,6 +130,9 @@ the game. Typical conclusions:
 | … — try another server or the direct path. | the VPN server you are on is losing packets |
 | … — switch to the VPN. | your normal connection is losing packets now |
 | The direct path was stable in the last … | nothing to do |
+
+When the VPN's ping jumped in two minutes or more, the conclusion adds how
+often, for example "Its ping jumped in 7 of 15 minutes."
 
 ### The cards
 
@@ -147,9 +154,9 @@ which servers a card includes; **Advanced** keeps each server apart.
 **★ Best** goes to the most stable path. Among equally stable paths the
 one with the steadier ping wins (Steady ping green from 95 %, amber from
 80 %, red below), then the one with the lowest ping, because small loss
-below the noticeable level is not felt, while latency is felt all the time. The star appears
-only once at least two paths have enough data; a path without enough says
-"Little data".
+below the noticeable level is not felt, while latency is felt all the
+time. The star appears only once at least two paths have enough data; a
+path without enough says "Little data".
 
 The cards count all your recordings by default. **This session** shows
 only the current one.
@@ -260,6 +267,7 @@ event log. What every column means is in
 | Every card says "Little data" for a long time, and Advanced lists `capture` errors | packet capture is not allowed | join the `wireshark` group and log in again — see [INSTALL.md](INSTALL.md#allowing-capture) |
 | "Nothing captured yet" in the tray tooltip | the watched program has no lasting connection yet, or the name in `config.toml` does not match | check the program name in `config.toml` |
 | Very high ping loss through the VPN, but the cards show no loss on it | some VPN servers (Proton's free ones among them) limit ping; the program pings one target at a time there, but anything else pinging through the tunnel adds to it | trust the cards; they count the program's own packets |
+| The Tunnel line says the VPN server was not pinged outside the tunnel | the VPN is not a WireGuard connection in your network settings, so its public address is unknown | nothing to fix; jumps are still counted, only where they start cannot be told |
 | Errors about the direct interface while the VPN is on | the VPN's kill switch blocks traffic outside the tunnel | the normal connection cannot be watched in parallel with this VPN; compare sessions on each path instead |
 | "A recorder is already running" when starting | a recording is already active (perhaps from a terminal) | use the running one, or stop it first |
 | No tray icon | the desktop has no system tray | the window opens at start instead; on GNOME, install the AppIndicator extension |

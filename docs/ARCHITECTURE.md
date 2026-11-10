@@ -664,6 +664,7 @@ server).
 | `probe-error ... -I <direct iface>` while a VPN is up | the VPN's kill switch blocks traffic outside the tunnel; the direct path cannot be probed in parallel |
 | high ping loss over a VPN path, no retransmissions in `losses.csv` for the same path | ICMP limited by the VPN server; trust the TCP numbers. Check that nothing else pings through the tunnel at the same time |
 | `trace-error ... interrupted by SIGINT` | the recorder was stopped with Ctrl+C while a trace ran (the signal reaches the whole process group) |
+| `probe-skip ... public address is not known` | the VPN is not a WireGuard connection in NetworkManager; the Tunnel line (§10) cannot say where jumps start, jumps are still counted |
 | `counters-reset` | a socket was replaced between two samples on the same 4-tuple; rare, harmless |
 
 ## 12. Tests
