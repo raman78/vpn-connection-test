@@ -66,7 +66,7 @@ desktop notification says so, once per change.
 ## The window
 
 ```
-┌─ VPN connection test ────────────────────────────────────────────┐
+┌─ VPN connection test 0.2.0 ──────────────────────────────────────┐
 │ AION2.exe :13328                     [It stutters now] [Advanced]│
 ├──────────────────────────────────────────────────────────────────┤
 │ Direct path is losing packets — switch to the VPN at the next    │
@@ -92,7 +92,9 @@ desktop notification says so, once per change.
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-The window opens on the **overview** for one connection. When several
+The window's title bar shows the program's version, the one to give when
+reporting a problem. The window opens on the **overview** for one
+connection. When several
 programs are watched, it picks the busiest one with enough data; the
 drop-down list at the top switches between them.
 

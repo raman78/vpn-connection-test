@@ -3,6 +3,11 @@
 What changed for users, release by release. Technical details are in
 `docs/ARCHITECTURE.md`.
 
+## [Unreleased]
+
+### Added
+- The window's title shows the program's version.
+
 ## [0.2.0] — 2026-11-10
 
 ### Added

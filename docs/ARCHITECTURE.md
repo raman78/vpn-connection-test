@@ -408,7 +408,8 @@ extra RTT), or whether the VPN lost more. The window shows the same lines.
 
 `vpnct-gui` runs an `Engine` in its own process and only displays it.
 
-The window opens maximized the first time it is shown (`App.show_window`);
+The window's title carries `__version__` (§13). The window opens
+maximized the first time it is shown (`App.show_window`);
 after that it keeps the size it was given when it is hidden and shown again.
 The window has two views, switched by **Advanced** in its header:
 

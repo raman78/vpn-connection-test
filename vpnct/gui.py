@@ -38,7 +38,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCom
                              QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QSystemTrayIcon,
                              QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget)
 
-from . import advice, config, report
+from . import __version__, advice, config, report
 from .cli import MARK_SIGNAL, claim_pidfile, release_pidfile
 from .engine import Engine, MinutePoint, ProbePoint, RouteResult, SecondPoint
 from .monitor import MonitorMinute
@@ -500,7 +500,7 @@ class Window(QMainWindow):
         self.extra_sessions: set[str] = set()
         self.summary = None          # this session (plus picked ones), every 15 s
         self.all_summary = None      # all sessions, every minute
-        self.setWindowTitle("VPN connection test")
+        self.setWindowTitle(f"VPN connection test {__version__}")
         self.resize(1080, 860)
         page = QWidget()
         page.setObjectName("page")
