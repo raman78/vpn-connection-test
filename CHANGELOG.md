@@ -20,6 +20,7 @@ What changed for users, release by release. Technical details are in
   or the routers had not answered.
 
 ### Changed
+- The window opens maximized.
 - VPN servers whose names differ only in their number (such as every
   "NL-FREE#…" server) now share one card and are recommended together;
   **Advanced** and the terminal report still show each server.

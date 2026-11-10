@@ -55,7 +55,8 @@ be all calm or all bad.
 | grey | nothing measured yet |
 
 Hovering shows the path in use, the round trip and the last minute's
-numbers. Clicking opens the window. The right-click menu has
+numbers. Clicking opens the window, maximized the first time; if you make
+it smaller, it keeps that size the next time. The right-click menu has
 **It stutters now** and **Quit**. Closing the window only hides it;
 recording goes on until **Quit**.
 

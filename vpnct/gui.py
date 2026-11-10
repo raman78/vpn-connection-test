@@ -994,6 +994,7 @@ class App:
         self.rec_timer.start(RECOMMEND_PERIOD_MS)
         QTimer.singleShot(2000, self.request_recommendation)
         self._last_hint_level = None
+        self._window_shown = False
 
     def on_activated(self, reason) -> None:
         if reason == QSystemTrayIcon.ActivationReason.Trigger:
@@ -1003,7 +1004,13 @@ class App:
                 self.show_window()
 
     def show_window(self) -> None:
-        self.window.show()
+        # Maximized the first time; after that Qt keeps whatever size the
+        # person gave it between hiding and showing.
+        if self._window_shown:
+            self.window.show()
+        else:
+            self.window.showMaximized()
+            self._window_shown = True
         self.window.raise_()
         self.window.activateWindow()
 
