@@ -407,6 +407,7 @@ class JumpyRankingTests(unittest.TestCase):
         s = self.summary(losses, samples)
         c = {x.title: x for x in advice.path_cards(by_service(s["groups"])[("GAME.exe", "13328")])}
         self.assertEqual(c["VPN · A"].jumpy_pct, 50.0)
+        self.assertEqual(c["VPN · A"].steady_pct, 50.0)
         self.assertEqual(c["VPN · A"].jumpy_level, "poor")
         self.assertTrue(c["VPN · B"].best)
         self.assertEqual(c["VPN · B"].best_reason, "as stable, steadier ping")
@@ -428,4 +429,4 @@ class JumpyRankingTests(unittest.TestCase):
         self.assertEqual(rec.verdict, "stay-direct")
         self.assertEqual([r.path for r in rec.ranking], ["vpn:wg1 [B]", "vpn:wg0 [A]"])
         self.assertEqual(rec.ranking[1].members, (a1, a2))
-        self.assertIn("ping jumped in 0 % of minutes", rec.headline)
+        self.assertIn("ping steady in 100 % of minutes", rec.headline)

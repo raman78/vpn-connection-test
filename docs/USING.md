@@ -80,7 +80,7 @@ desktop notification says so, once per change.
 │ ┌ Direct ──────────┐ ┌ VPN · NO ★ Best ──┐ ┌ VPN · NL ────────┐  │
 │ │ Ping     32 ms   │ │ Ping     43 ms    │ │ Ping     45 ms   │  │
 │ │ Spikes   3 ms    │ │ Spikes   7 ms     │ │ Spikes   9 ms    │  │
-│ │ Jumpy    1 %     │ │ Jumpy    8 %      │ │ Jumpy    29 %    │  │
+│ │ Steady ping 99 % │ │ Steady ping 92 %  │ │ Steady ping 71 % │  │
 │ │ Stability 90 %   │ │ Stability 100 %   │ │ Stability 100 %  │  │
 │ │ Loss     0.40 %  │ │ Loss     0.00 %   │ │ Loss     0.01 %  │  │
 │ └──────────────────┘ └───────────────────┘ └──────────────────┘  │
@@ -139,13 +139,13 @@ which servers a card includes; **Advanced** keeps each server apart.
 |---|---|
 | **Ping** | the usual round trip of the connection, in milliseconds |
 | **Spikes** | how far the ping jumps above its usual value at its worst moments (the worst 5 %) |
-| **Jumpy** | the share of minutes in which the ping jumped — even when nothing was lost |
+| **Steady ping** | the share of minutes in which the ping did not jump; like Stability, more is better |
 | **Stability** | the share of minutes in which no noticeable packet loss happened |
 | **Loss** | lost packets out of all packets received |
 
 **★ Best** goes to the most stable path. Among equally stable paths the
-one whose ping jumps least wins (green under 5 % of minutes, amber under
-20 %, red above), then the one with the lowest ping, because small loss
+one with the steadier ping wins (Steady ping green from 95 %, amber from
+80 %, red below), then the one with the lowest ping, because small loss
 below the noticeable level is not felt, while latency is felt all the time. The star appears
 only once at least two paths have enough data; a path without enough says
 "Little data".
@@ -160,9 +160,9 @@ were lost. For the background ping of your normal connection the bar is
 A minute counts as **jumpy** when, within that minute, the ping rose
 clearly above its own usual level: for the slowest few seconds 10 ms or
 more, or for a single second 30 ms or more. A ping that sits higher for a
-whole stretch is not a jump; it shows as a higher **Ping**. Your normal
-connection is jumpy in about 1 % of minutes; free VPN servers measured so
-far in 14–34 %.
+whole stretch is not a jump; it shows as a higher **Ping**. **Steady ping**
+is the share of the other minutes: about 99 % on your normal connection,
+66–86 % on the free VPN servers measured so far.
 
 Jumps are shown everywhere and help pick the best path, but they never ask
 you to switch by themselves; only lost packets do, since a switch means
@@ -171,8 +171,8 @@ going back to character select.
 ### The recommendation
 
 At the bottom, drawn from all your recordings. It names a VPN server
-family, and says how often its ping jumped next to your normal
-connection's:
+family, and says in how many minutes its ping was steady, next to your
+normal connection's:
 
 | Recommendation | When |
 |---|---|

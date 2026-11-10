@@ -191,6 +191,10 @@ class ServerRank:
         return 100.0 * self.jumpy_minutes / self.ping_minutes if self.ping_minutes else None
 
     @property
+    def steady_pct(self) -> float | None:
+        return None if self.jumpy_pct is None else 100.0 - self.jumpy_pct
+
+    @property
     def bad_fraction(self) -> float:
         return self.bad / self.minutes if self.minutes else 1.0
 
@@ -262,10 +266,10 @@ def _recommend(summary: dict, service: tuple[str, str]) -> tuple[Recommendation,
 
     def jumps(r: ServerRank) -> str:
         """How often its ping jumped, next to the direct path's."""
-        if r.jumpy_pct is None:
-            return "ping jumps unknown"
-        direct_part = (f" (direct {100 * d_jumpy / d_ping:.0f} %)" if d_ping else "")
-        return f"ping jumped in {r.jumpy_pct:.0f} % of minutes{direct_part}"
+        if r.steady_pct is None:
+            return "steadiness of its ping unknown"
+        direct_part = (f" (direct {100 - 100 * d_jumpy / d_ping:.0f} %)" if d_ping else "")
+        return f"ping steady in {r.steady_pct:.0f} % of minutes{direct_part}"
 
     def cost(r: ServerRank) -> str:
         """RTT difference to the direct path, with how much direct data it rests on."""
@@ -296,7 +300,8 @@ def _recommend(summary: dict, service: tuple[str, str]) -> tuple[Recommendation,
             parts = []
             for m in r.members:
                 g = servers[m]
-                jp = f", jumpy {100 * g.spiky_minutes / g.ping_minutes:.0f} %" if g.ping_minutes else ""
+                jp = (f", ping steady {100 - 100 * g.spiky_minutes / g.ping_minutes:.0f} %"
+                      if g.ping_minutes else "")
                 parts.append(f"{m.partition(' [')[2].rstrip(']')} {g.judged_minutes} min{jp}")
             details.append(f"servers in {r.path}: " + "; ".join(parts))
     short = [p for p, g in vpn.items() if g.judged_minutes < REC_MIN_SERVER_MINUTES]
@@ -314,7 +319,7 @@ def _recommend(summary: dict, service: tuple[str, str]) -> tuple[Recommendation,
     frac = bad / exposure
     rate = f"bad in {bad} of {exposure} minutes ({100 * frac:.1f}%)"
     if frac < REC_RARE:
-        best = (f"; the best VPN server would cost {cost(ranking[0])}, and its {jumps(ranking[0])}"
+        best = (f"; the best VPN server would cost {cost(ranking[0])}, with its {jumps(ranking[0])}"
                 if ranking else "")
         return (Recommendation("stay-direct", f"Stay on the direct path: it was {rate}{best}.",
                               details, ranking), provisional)
@@ -391,6 +396,11 @@ class PathCard:
     @property
     def jumpy_level(self) -> str:
         return jumpy_level(self.jumpy_pct)
+
+    @property
+    def steady_pct(self) -> float | None:
+        """Minutes in which the ping did not jump: shown, like Stability, as 'more is better'."""
+        return None if self.jumpy_pct is None else 100.0 - self.jumpy_pct
 
     @property
     def stability_level(self) -> str:

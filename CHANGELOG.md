@@ -7,7 +7,7 @@ What changed for users, release by release. Technical details are in
 
 ### Added
 - Ping jumps are now shown, not only lost packets: each card has
-  **Jumpy**, the share of minutes in which the ping jumped, and
+  **Steady ping**, the share of minutes in which the ping did not jump, and
   **Recently**, the hints and the recommendation say how often the ping
   jumped on each path. Among equally stable paths the steadier one is
   marked best.

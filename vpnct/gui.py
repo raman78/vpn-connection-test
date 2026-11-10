@@ -410,14 +410,15 @@ class PathCardWidget(QFrame):
         tips = {
             "Ping": "Median round-trip time to the server over the seconds with traffic.",
             "Spikes": "How far the ping jumps above its usual value: 95th percentile minus median.",
-            "Jumpy": "Share of minutes in which the ping jumped: within the minute, the 95th percentile "
-                     f"{report.SPIKE_SPREAD_MS:.0f} ms or one second {report.SPIKE_MAX_MS:.0f} ms over its "
-                     "median. Nothing need be lost in such a minute; it is counted apart from Stability.",
+            "Steady ping": "Share of minutes in which the ping did not jump. A minute jumps when, within "
+                           f"it, the 95th percentile is {report.SPIKE_SPREAD_MS:.0f} ms or one second "
+                           f"{report.SPIKE_MAX_MS:.0f} ms over its median. Nothing need be lost in such a "
+                           "minute; it is counted apart from Stability.",
             "Stability": "Share of measured minutes without packet loss (a minute is lost-free below "
                          f"{report.CAL_TCP_BAD_PCT} % retransmitted).",
             "Loss": "Packets the server had to send again, of all it sent.",
         }
-        for i, name in enumerate(("Ping", "Spikes", "Jumpy", "Stability", "Loss")):
+        for i, name in enumerate(("Ping", "Spikes", "Steady ping", "Stability", "Loss")):
             cap = label(name, "muted")
             cap.setToolTip(tips[name])
             val = label("–", "big")
@@ -439,8 +440,8 @@ class PathCardWidget(QFrame):
         ms = lambda v, f="{:.0f} ms": "–" if v is None else f.format(v)
         self.values["Ping"].setText(ms(c.ping_ms))
         self.values["Spikes"].setText(ms(c.spikes_ms, "+{:.0f} ms"))
-        self.values["Jumpy"].setText(ms(c.jumpy_pct, "{:.0f} % of min"))
-        self.values["Jumpy"].setStyleSheet(f"color: {LEVEL_COLOURS[c.jumpy_level]}")
+        self.values["Steady ping"].setText(ms(c.steady_pct, "{:.0f} %"))
+        self.values["Steady ping"].setStyleSheet(f"color: {LEVEL_COLOURS[c.jumpy_level]}")
         self.values["Stability"].setText(ms(c.stability_pct, "{:.0f} %"))
         self.values["Loss"].setText(ms(c.loss_pct, "{:.2f} %"))
         self.values["Stability"].setStyleSheet(f"color: {LEVEL_COLOURS[c.stability_level]}")
@@ -935,7 +936,7 @@ class Window(QMainWindow):
             best = rec.ranking[0]
             name, _itf = advice.path_title(best.path)
             rtt = f", ping {best.rtt_p50:.0f} ms" if best.rtt_p50 is not None else ""
-            jumpy = f", ping jumped in {best.jumpy_pct:.0f} % of minutes" if best.jumpy_pct is not None else ""
+            jumpy = f", ping steady in {best.steady_pct:.0f} % of minutes" if best.steady_pct is not None else ""
             self.rec_sub.setText(f"Best VPN measured so far: {name} — {100 - 100 * best.bad_fraction:.0f} % "
                                  f"stable{rtt}{jumpy}, {best.minutes} min. Full reasoning under Advanced.")
         else:

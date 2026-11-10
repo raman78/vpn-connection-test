@@ -421,7 +421,7 @@ Card numbers:
 |---|---|---|
 | Ping | median RTT over seconds with data | `Group.rtts` |
 | Spikes | RTT p95 minus median — how far the ping jumps above usual | `Group.rtts` |
-| Jumpy | minutes in which the ping jumped, of those with enough seconds (§10) | `Group.ping_minutes`, `spiky_minutes` |
+| Steady ping | minutes in which the ping did not jump, of those with enough seconds (§10); shown this way round so that, like Stability, more is better | `Group.ping_minutes`, `spiky_minutes` |
 | Stability | judged minutes that were not bad (§10) | `Group.judged_minutes`, `bad_minutes` |
 | Loss | remote retransmissions per captured data packet | `report.loss_pct` |
 
@@ -434,8 +434,9 @@ the VPN servers.
 
 **★ Best** goes to one card, and only when at least two paths have
 `REC_MIN_SERVER_MINUTES` judged minutes: the highest stability; among
-equally stable paths the steadier ping (by Jumpy level: under
-`JUMPY_FAIR_PCT` 5 %, under `JUMPY_POOR_PCT` 20 %, or more), then the
+equally stable paths the steadier ping (by level of jumpy minutes: under
+`JUMPY_FAIR_PCT` 5 %, under `JUMPY_POOR_PCT` 20 %, or more — Steady ping
+95 % and over, 80 % and over, below), then the
 lowest ping (loss below the bad-minute threshold is not felt); loss only
 breaks a tie. The badge says which ("most stable", "as stable, steadier
 ping" or "as stable, lowest ping"). A path with fewer minutes says "Little data". Cards
@@ -584,15 +585,15 @@ without bad periods the direct path wins.
    `REC_MIN_SESSIONS` (3) sessions with it: one evening can be all calm or
    all bad, and the answer depends on how often bad evenings come.
 3. **VPN server families** with at least 10 judged minutes are ranked by
-   bad-minute fraction, then Jumpy level (as on the cards), then loss, then
-   RTT. Each is listed with how often its ping jumped next to the direct
+   bad-minute fraction, then level of jumpy minutes (as on the cards), then
+   loss, then RTT. Each is listed with its Steady ping next to the direct
    path's, and with its servers. The RTT cost against the direct path says
    how many seconds of direct traffic it rests on, and that it is too few
    below ten minutes' worth.
 4. Verdict, with `frac` = bad direct minutes / exposure:
    - `frac` < `REC_RARE` (2 %): **stay direct** — a VPN costs latency every
      minute to spare a few; the headline names the best family's latency
-     cost and how often its ping jumped;
+     cost and its Steady ping;
    - no ranked server: the direct path's rate, no server to name;
    - best server's bad fraction at least half of `frac`: **the VPN does not
      help**;
