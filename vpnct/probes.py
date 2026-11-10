@@ -21,6 +21,7 @@ from __future__ import annotations
 import re
 import signal
 import subprocess
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
@@ -111,14 +112,43 @@ def parse_tracepath(stdout: str) -> list[Hop]:
     return [hops[n] for n in sorted(hops)]
 
 
+STOPPED = "stopped"         # a trace ended by `stop`: not a result, the caller writes nothing
+STOP_POLL_S = 0.2
+
+
+def run_stoppable(cmd: list[str], stop=None, timeout: float = 60) -> subprocess.CompletedProcess | None:
+    """subprocess.run that `stop` (a threading.Event) can end: the process is
+    killed and None returned. tracepath to a server that stops answering
+    runs for tens of seconds, and recording must not wait for it to end.
+    Raises subprocess.TimeoutExpired like subprocess.run."""
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            out, err = proc.communicate(timeout=STOP_POLL_S)
+            return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+        except subprocess.TimeoutExpired:
+            if stop is not None and stop.is_set():
+                proc.kill()
+                proc.communicate()
+                return None
+            if time.monotonic() >= deadline:
+                proc.kill()
+                proc.communicate()
+                raise subprocess.TimeoutExpired(cmd, timeout)
+
+
 def trace_route(target: str, stop=None) -> tuple[list[Hop], str | None]:
     """Hops to the target, each answering hop pinged one at a time.
-    `stop` (a threading.Event) ends the hop pings early when set."""
+    When `stop` (a threading.Event) is set, tracepath is killed or the hop
+    pings end, and the error is STOPPED: a trace cut short is not a result."""
     try:
-        r = subprocess.run(["tracepath", "-n", "-m", str(TRACE_MAX_HOPS), target],
-                           capture_output=True, text=True, timeout=TRACE_MAX_HOPS * 4 + 10)
+        r = run_stoppable(["tracepath", "-n", "-m", str(TRACE_MAX_HOPS), target], stop,
+                          timeout=TRACE_MAX_HOPS * 4 + 10)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return [], str(exc)
+    if r is None:
+        return [], STOPPED
     hops = parse_tracepath(r.stdout)
     if not hops:
         return [], (r.stderr.strip() or f"tracepath gave no hops ({exit_text(r.returncode)})")
@@ -126,7 +156,7 @@ def trace_route(target: str, stop=None) -> tuple[list[Hop], str | None]:
     # one is up, and ICMP through a tunnel can be rate limited per client.
     for hop in hops:
         if stop is not None and stop.is_set():
-            break
+            return hops, STOPPED
         if hop.address:
             hop.ping = ping(hop.address)
     return hops, None
@@ -193,7 +223,7 @@ def trace_via(target: str, interface: str, stop=None, max_hops: int = TRACE_MAX_
     reached = False
     for ttl in range(1, max_hops + 1):
         if stop is not None and stop.is_set():
-            return hops, "stopped"
+            return hops, STOPPED
         address = None
         for _ in range(TTL_TRIES):
             try:
@@ -213,7 +243,7 @@ def trace_via(target: str, interface: str, stop=None, max_hops: int = TRACE_MAX_
         return hops, f"target not reached within {max_hops} hops"
     for hop in hops:
         if stop is not None and stop.is_set():
-            break
+            return hops, STOPPED       # hops not yet pinged would read as silent routers
         if hop.address:
             hop.ping = ping(hop.address, interface)
     return hops, None

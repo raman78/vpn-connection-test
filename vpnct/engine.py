@@ -404,6 +404,8 @@ class Engine:
             if self._stop.is_set():
                 return
             self._trace_direct(target, d.name, trigger)
+        if self._stop.is_set():
+            return
         if self.paths.vpn_interfaces() or not directs:
             self._trace(target)
 
@@ -411,7 +413,7 @@ class Engine:
         now = time.time()
         path = self.paths.path_for_interface(itf).label
         hops, error = probes.trace_via(target, itf, stop=self._stop)
-        if error == "stopped":
+        if error == probes.STOPPED:
             return
         for h in hops:
             pr = h.ping
@@ -439,6 +441,8 @@ class Engine:
         itf = interfaces.route_interface(target)
         path = self.paths.path_for_interface(itf).label if itf else "?"
         hops, error = probes.trace_route(target, stop=self._stop)
+        if error == probes.STOPPED:
+            return
         if error:
             self.session.write("hops.csv", {"time": iso(now), "target": target, "path": path,
                                             "hop": "", "address": "", "error": error})

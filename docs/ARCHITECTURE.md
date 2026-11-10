@@ -230,8 +230,16 @@ A ping that could not be sent (exit status 2, or ended by a signal) is an
 **error**, not 100 % loss. Errors are also `probe-error` events.
 
 When recording stops, the probe thread finishes the ping in progress and
-starts no other (`stop` in `run_serial_per_path` and `trace_route`); the
-skipped pings are not written at all rather than written as failures.
+starts no other (`stop` in `run_serial_per_path`, `trace_via` and
+`trace_route`); the skipped pings are not written at all rather than
+written as failures. A running `tracepath` is killed (`probes.run_stoppable`
+polls the stop flag every 0.2 s): to a server that stops answering it runs
+for tens of seconds, and Quit used to wait for it — 22 and 30 s measured on
+2026-11-10. A trace cut short returns `probes.STOPPED` and is written
+nowhere — not to `hops.csv`, `routes.csv` or the events. Before this, a
+direct trace stopped while its hops were being pinged was judged anyway,
+and the unpinged server read as "no answer from the target"; a tunnel
+trace wrote its unpinged hops as "no reply to tracepath".
 
 ### Route traces
 
@@ -472,8 +480,10 @@ theme; the chart is painted with the same colours.
   grey nothing captured. A desktop without a system tray gets the window
   at start instead.
 - **Quit** stops the engine on a background thread and leaves once the
-  session is closed. The probe thread stops between pings (§5), so this
-  takes about one ping, a few seconds; measured 1.8 s. SIGTERM and SIGINT
+  session is closed. The probe thread stops between pings and kills a
+  running `tracepath` (§5), so this takes at most about one ping, a few
+  seconds; measured 1.8 s, and 0.2 s with `tracepath` running
+  (2026-11-10). SIGTERM and SIGINT
   take the same path.
 
 `vpnct install-desktop` writes

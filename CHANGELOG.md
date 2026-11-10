@@ -14,6 +14,11 @@ What changed for users, release by release. Technical details are in
 - The **Tunnel** line in **Recently** tells where a VPN's ping jumps come
   from: the route to the VPN server, or the VPN server itself.
 
+### Fixed
+- **Quit** no longer waits up to half a minute for a route trace to finish.
+- A route trace cut short by Quit is no longer recorded as if the server
+  or the routers had not answered.
+
 ### Changed
 - VPN servers whose names differ only in their number (such as every
   "NL-FREE#…" server) now share one card and are recommended together;
