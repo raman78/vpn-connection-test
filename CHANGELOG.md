@@ -3,6 +3,22 @@
 What changed for users, release by release. Technical details are in
 `docs/ARCHITECTURE.md`.
 
+## [Unreleased]
+
+### Added
+- Ping jumps are now shown, not only lost packets: each card has
+  **Jumpy**, the share of minutes in which the ping jumped, and
+  **Recently**, the hints and the recommendation say how often the ping
+  jumped on each path. Among equally stable paths the steadier one is
+  marked best.
+- The **Tunnel** line in **Recently** tells where a VPN's ping jumps come
+  from: the route to the VPN server, or the VPN server itself.
+
+### Changed
+- VPN servers whose names differ only in their number (such as every
+  "NL-FREE#…" server) now share one card and are recommended together;
+  **Advanced** and the terminal report still show each server.
+
 ## [0.1.0] — 2026-11-09
 
 ### Added

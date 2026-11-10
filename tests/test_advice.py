@@ -186,12 +186,12 @@ class PathCardTests(unittest.TestCase):
         rows = [loss(f"d{m}", 20 if m < 5 else 0) for m in range(50)]
         rows += [loss(f"v{m}", 0, "vpn:wg0 [VPN NL#1]", "wg0") for m in range(20)]
         c = self.cards([rows])
-        self.assertEqual(set(c), {"Direct", "VPN · VPN NL#1"})
+        self.assertEqual(set(c), {"Direct", "VPN · VPN NL"})      # server family, number dropped
         self.assertAlmostEqual(c["Direct"].stability_pct, 90.0)
         self.assertEqual(c["Direct"].stability_level, "poor")
-        self.assertEqual(c["VPN · VPN NL#1"].stability_pct, 100.0)
-        self.assertTrue(c["VPN · VPN NL#1"].best)
-        self.assertEqual(c["VPN · VPN NL#1"].best_reason, "most stable")
+        self.assertEqual(c["VPN · VPN NL"].stability_pct, 100.0)
+        self.assertTrue(c["VPN · VPN NL"].best)
+        self.assertEqual(c["VPN · VPN NL"].best_reason, "most stable")
         self.assertFalse(c["Direct"].best)
 
     def test_no_best_with_only_one_comparable_path(self):
@@ -311,3 +311,121 @@ class RecentViewTests(unittest.TestCase):
     def test_few_clean_watched_minutes_are_not_enough(self):
         v = self.view(self.vpn_minutes(20), self.watch(advice.RECENT_MIN_CLEAN - 1))
         self.assertEqual(v.conclusion.level, "unknown")
+
+
+def sp(t, rtt, vpn=True, path=None, local_port=1):
+    from vpnct.engine import SecondPoint
+    path = path or ("vpn:wg0 [VPN NL#7]" if vpn else "direct:eth0")
+    return SecondPoint(t, "GAME.exe", 13328, path, vpn, rtt, 10, HOST, local_port)
+
+
+def seconds_of(start, jumpy, n=60, vpn=True):
+    """One minute of SecondPoints from `start`; jumpy: one second 50 ms up."""
+    return [sp(start + i, 85.0 if jumpy and i == 30 else 35.0, vpn) for i in range(n)]
+
+
+def probe_point(t, role, jumpy):
+    from vpnct.engine import ProbePoint
+    return ProbePoint(t, "198.51.100.1", role, "eth0", "x", 20, 20, 34.0, 80.0 if jumpy else 36.0, "")
+
+
+class JumpyAdviceTests(unittest.TestCase):
+    NOW = 100_020.0      # minutes at 99_960, 99_900, ... are whole minutes
+
+    def minute_starts(self, n):
+        return [int(self.NOW // 60) * 60 - 60 * (i + 1) for i in range(n)]
+
+    def test_hint_says_when_the_vpn_ping_jumps(self):
+        starts = self.minute_starts(3)
+        secs = [s for t in sorted(starts) for s in seconds_of(t, jumpy=True)]
+        minutes = [mp(t, 0, vpn=True) for t in sorted(starts)]
+        h = advice.live_hint(minutes, [mon(t, 0) for t in sorted(starts)], True, "unconfirmed", seconds=secs)
+        self.assertIn("jumped in 3 of the last 3 minutes", h.text)
+        self.assertEqual(h.level, "ok")                  # jumps alone never ask for a switch
+        calm = [s for t in sorted(starts) for s in seconds_of(t, jumpy=False)]
+        h = advice.live_hint(minutes, [mon(t, 0) for t in sorted(starts)], True, "unconfirmed", seconds=calm)
+        self.assertNotIn("jumped", h.text)
+
+    def test_recent_view_counts_jumps_per_family(self):
+        starts = sorted(self.minute_starts(12))
+        secs = []
+        for i, t in enumerate(starts):              # two servers of one family, 6 jumpy minutes
+            path = "vpn:wg0 [VPN NL#7]" if i < 6 else "vpn:wg0 [VPN NL#9]"
+            secs += [sp(t + k, 85.0 if i % 2 == 0 and k == 30 else 35.0, path=path) for k in range(60)]
+        minutes = [mp(t, 0, vpn=True) for t in starts]
+        for m, i in zip(minutes, range(12)):
+            m.path = "vpn:wg0 [VPN NL#7]" if i < 6 else "vpn:wg0 [VPN NL#9]"
+        watch = [mon(t, 0) for t in starts]
+        v = advice.recent_view(minutes, secs, watch, [], True, 3600, self.NOW)
+        own = [l for l in v.lines if l.title.startswith("VPN")]
+        self.assertEqual([l.title for l in own], ["VPN · VPN NL"])
+        self.assertIn("ping jumped in 6 of 12", own[0].text)
+        self.assertEqual(own[0].level, "fair")
+        self.assertEqual(v.conclusion.level, "return")
+        self.assertIn("Its ping jumped in 6 of 12 minutes", v.conclusion.text)
+
+    def test_tunnel_line_tells_where_jumps_start(self):
+        t = self.NOW - 100
+        def view(inside, outside):
+            pr = [probe_point(t, "vpn-gateway(wg0)", i < inside) for i in range(10)]
+            pr += [probe_point(t, "vpn-endpoint(wg0)", i < outside) for i in range(10)]
+            v = advice.recent_view([], [], [], [], True, 3600, self.NOW, probes=pr)
+            return next(l.text for l in v.lines if l.title == "Tunnel")
+        self.assertIn("only inside the tunnel", view(5, 0))
+        self.assertIn("on the route to the VPN server", view(5, 4))
+        self.assertIn("steady up to the VPN server", view(1, 0))
+        pr = [probe_point(t, "vpn-gateway(wg0)", True) for _ in range(3)]
+        v = advice.recent_view([], [], [], [], True, 3600, self.NOW, probes=pr)
+        self.assertIn("not pinged outside the tunnel", next(l.text for l in v.lines if l.title == "Tunnel"))
+
+
+class JumpyRankingTests(unittest.TestCase):
+    def summary(self, losses, samples):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "s"
+            write_session(d, {"losses.csv": losses, "samples.csv": samples})
+            return summarise([d])
+
+    @staticmethod
+    def samples(path, minutes, jumpy_every, rtt, local="192.0.2.20:1"):
+        from tests.test_report import minute_samples
+        out = []
+        for m in range(minutes):
+            rtts = [rtt] * 60
+            if jumpy_every and m % jumpy_every == 0:
+                rtts[30] = rtt + 50
+            for r in minute_samples(m, rtts, path=path, local=local):
+                r["remote"] = f"{HOST}:13328"
+                out.append(r)
+        return out
+
+    def test_steadier_ping_wins_among_equally_stable(self):
+        from vpnct.report import by_service
+        a, b = "vpn:wg0 [A]", "vpn:wg1 [B]"
+        losses = [loss(f"a{m}", 0, a, "wg0") for m in range(20)] + [loss(f"b{m}", 0, b, "wg1") for m in range(20)]
+        samples = self.samples(a, 20, 2, 40.0) + self.samples(b, 20, 0, 45.0)    # A cheaper but jumpy
+        s = self.summary(losses, samples)
+        c = {x.title: x for x in advice.path_cards(by_service(s["groups"])[("GAME.exe", "13328")])}
+        self.assertEqual(c["VPN · A"].jumpy_pct, 50.0)
+        self.assertEqual(c["VPN · A"].jumpy_level, "poor")
+        self.assertTrue(c["VPN · B"].best)
+        self.assertEqual(c["VPN · B"].best_reason, "as stable, steadier ping")
+
+    def test_recommendation_ranks_families_and_names_jumps(self):
+        a1, a2, b = "vpn:wg0 [A#1]", "vpn:wg0 [A#2]", "vpn:wg1 [B]"
+        losses = [loss(f"d{m}", 0) for m in range(130)]
+        losses += [loss(f"a{m}", 0, a1 if m < 6 else a2, "wg0") for m in range(12)]
+        losses += [loss(f"b{m}", 0, b, "wg1") for m in range(12)]
+        samples = self.samples(a1, 12, 2, 40.0) + self.samples(b, 12, 0, 45.0, local="192.0.2.20:9")
+        sessions = []
+        with tempfile.TemporaryDirectory() as tmp:
+            for i in range(3):
+                d = Path(tmp) / f"s{i}"
+                write_session(d, {"losses.csv": losses, "samples.csv": samples if i == 0 else []})
+                sessions.append(d)
+            s = summarise(sessions)
+        rec = advice.recommend(s, ("GAME.exe", "13328"))
+        self.assertEqual(rec.verdict, "stay-direct")
+        self.assertEqual([r.path for r in rec.ranking], ["vpn:wg1 [B]", "vpn:wg0 [A]"])
+        self.assertEqual(rec.ranking[1].members, (a1, a2))
+        self.assertIn("ping jumped in 0 % of minutes", rec.headline)

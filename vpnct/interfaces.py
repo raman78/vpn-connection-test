@@ -11,6 +11,7 @@ servers on the same interface name are told apart.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 
@@ -176,6 +177,33 @@ def read_vpn_gateway(device: str) -> str | None:
         return None
     targets = parse_nm_device_targets(out)
     return targets[0] if targets else None
+
+
+_ENDPOINT = re.compile(r"endpoint=(\S+)")
+
+
+def parse_wireguard_endpoint(output: str) -> str | None:
+    """`nmcli -g wireguard.peers connection show NAME` -> the first peer's
+    host. nmcli escapes ':' in -g output: 'KEY allowed-ips=0.0.0.0/0
+    endpoint=192.0.2.7\\:443' -> '192.0.2.7'; '[2001\\:db8\\:\\:1]\\:443' ->
+    '2001:db8::1'."""
+    m = _ENDPOINT.search(output.replace("\\:", ":"))
+    if not m:
+        return None
+    host = m.group(1).rstrip(",;|").rpartition(":")[0]
+    return host.strip("[]") or None
+
+
+def read_vpn_endpoint(connection: str) -> str | None:
+    """Public address of a WireGuard VPN server, from NetworkManager's
+    settings for the connection (no root needed). None for other VPN kinds
+    or when NetworkManager does not know it."""
+    try:
+        out = subprocess.run(["nmcli", "-g", "wireguard.peers", "connection", "show", "id", connection],
+                             capture_output=True, text=True, check=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return parse_wireguard_endpoint(out)
 
 
 def read_default_route_devices() -> set[str]:

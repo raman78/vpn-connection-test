@@ -199,7 +199,19 @@ Every `PROBE_PERIOD_S` (60 s), in parallel, `PING_COUNT` pings per target:
 - **the tunnel's first hop** for each VPN interface: NetworkManager's
   gateway for the device, else its first DNS server (role
   `vpn-gateway(<iface>)`). When neither is known, a `probe-skip` event says
-  the tunnel's first hop was not probed.
+  the tunnel's first hop was not probed;
+- **the VPN server's public address, outside the tunnel**, through each
+  direct interface (role `vpn-endpoint(<iface>)`, `bound=yes`). The address
+  is the WireGuard peer's endpoint in NetworkManager's settings for the
+  connection (`nmcli -g wireguard.peers connection show id <name>`,
+  `interfaces.read_vpn_endpoint`; no root needed). Next to the tunnel's
+  first hop it tells where the ping's jumps start (§10, Recently): jumps
+  seen outside the tunnel too come from the route to the VPN server; jumps
+  only inside come from the server itself. Measured 2026-11-10 on Proton
+  NL-FREE#244: the far end answered in 34.5 ms through the tunnel and the
+  public address in 36 ms outside it. A VPN that is not a WireGuard
+  connection in NetworkManager has no known address; one `probe-skip`
+  event per interface and connection says so.
 
 Targets from connections: the remote hosts of the busiest captured
 connections, at most `MAX_CONNECTION_TARGETS` (4).
@@ -325,7 +337,9 @@ Addresses and names only; no packet content.
 ## 8. The report
 
 `vpnct report [session ...]` (default: the latest session) groups watched
-connections by **program, remote port and path**. The remote port stands for
+connections by **program, remote port and path** — here every VPN server
+is its own path; the window's cards and the recommendation join servers
+into families (§10). The remote port stands for
 the service: a game talks to several servers (game server, login, store,
 telemetry), and the main server's numbers must not be averaged with the
 others. Times are wall-clock: parallel connections in one group count each
@@ -333,12 +347,15 @@ second and each captured minute once.
 
 - **RTT p50/p95** — from `samples.csv`, only seconds in which data arrived
   (the kernel updates RTT only on traffic).
+- **jumpy min** — minutes in which the ping jumped, of the minutes with
+  enough seconds to tell (§10, Jumpy minute).
 - **loss %** — remote retransmissions per captured data packet;
   **rtx/min** — per captured minute; **worst min %** — the worst single
   minute with at least 50 data packets.
 - **Probes** per target, role, path and binding. A target that answered
   nothing in every round "does not answer ping" — that is a host that
-  ignores ping, not 100 % loss.
+  ignores ping, not 100 % loss. **jumps** counts the rounds whose slowest
+  reply came `PROBE_SPIKE_MS` (20 ms) or more after the fastest.
 - **Hops**: loss that continues to the last hop is real; loss at one hop
   only is that router limiting its own replies.
 
@@ -389,7 +406,9 @@ The window has two views, switched by **Advanced** in its header:
   service (the busiest one with enough judged minutes is chosen first):
   a banner with the live hint (§10) and the path in use; the **Recently**
   panel (`advice.recent_view`, §10) for the last 15 min / 1 h / 3 h of this
-  session; one card per tested path (`advice.path_cards`) with four numbers;
+  session; one card per tested path (`advice.path_cards`) with five
+  numbers — one card per VPN server family (§10), its servers named in the
+  subtitle's tooltip;
   the chart; the recommendation's headline. The cards read the all-sessions summary by
   default ("This session" switches to the current session's).
 - **Advanced** — everything else: status, the full comparison table,
@@ -402,6 +421,7 @@ Card numbers:
 |---|---|---|
 | Ping | median RTT over seconds with data | `Group.rtts` |
 | Spikes | RTT p95 minus median — how far the ping jumps above usual | `Group.rtts` |
+| Jumpy | minutes in which the ping jumped, of those with enough seconds (§10) | `Group.ping_minutes`, `spiky_minutes` |
 | Stability | judged minutes that were not bad (§10) | `Group.judged_minutes`, `bad_minutes` |
 | Loss | remote retransmissions per captured data packet | `report.loss_pct` |
 
@@ -414,9 +434,11 @@ the VPN servers.
 
 **★ Best** goes to one card, and only when at least two paths have
 `REC_MIN_SERVER_MINUTES` judged minutes: the highest stability; among
-equally stable paths the lowest ping (loss below the bad-minute threshold is
-not felt); loss only breaks a tie. The badge says which ("most stable" or
-"as stable, lowest ping"). A path with fewer minutes says "Little data". Cards
+equally stable paths the steadier ping (by Jumpy level: under
+`JUMPY_FAIR_PCT` 5 %, under `JUMPY_POOR_PCT` 20 %, or more), then the
+lowest ping (loss below the bad-minute threshold is not felt); loss only
+breaks a tie. The badge says which ("most stable", "as stable, steadier
+ping" or "as stable, lowest ping"). A path with fewer minutes says "Little data". Cards
 count only sessions with judged minutes on that path, the same basis as the
 recommendation.
 
@@ -435,8 +457,10 @@ theme; the chart is painted with the same colours.
 - **Direct path watch**: the status shows the monitor's last minute per
   server; the calibration status is shown under the comparison.
 - **Live data**: every second the window takes `Engine.drain_updates()` —
-  one `SecondPoint` per watched connection and second, one `MinutePoint` per
-  captured connection and minute — into an in-memory history (3 h) per
+  one `SecondPoint` per watched connection and second (with its remote
+  host and local port, so jumps are judged per connection), one
+  `MinutePoint` per captured connection and minute, the monitor's minutes,
+  route results and probe rounds — into an in-memory history (3 h) per
   service, and `Engine.snapshot()` for the status, probes and events.
 - **Comparison**: every 15 s a worker thread runs `report.summarise` on the
   session's files (plus any sessions picked with Compare sessions…) and the
@@ -473,6 +497,43 @@ it; their coverage is **summed** (they do not overlap). The first version
 took the minimum, which dropped every minute with a restart from judgement
 — 12.5 minutes on one VPN server counted as under 10.
 
+**Jumpy minute** (`report.spiky`, `report.RttMinute`) — counted beside the
+bad minute, never instead of it. The connection's ping jumped within the
+minute although nothing need have been lost: of one connection's seconds
+with data in that minute (at least `SPIKE_MIN_SECONDS` 30), the 95th
+percentile is `SPIKE_SPREAD_MS` (10 ms) or more above the minute's median,
+or one second is `SPIKE_MAX_MS` (30 ms) or more above it. A minute is
+jumpy when any of its connections was; each connection is judged alone,
+since two game servers in one minute sit at different levels.
+
+Why against the minute's own median: the obvious baseline, the kernel's
+`minrtt`, is wrong. Measured on the recordings to 2026-11-10, the direct
+path's TCP RTT sits a steady 10–15 ms above `minrtt` (delayed
+acknowledgements), so "seconds 20 ms above `minrtt`" came out worse for the
+steady direct path than for the VPN servers. Against the minute's median,
+the thresholds split the paths cleanly: 1 % of the direct path's minutes
+were jumpy, 14–34 % of the Proton free servers' (2026-11-08 to
+2026-11-10). A whole minute at a higher level — a connection whose RTT sat
+at 47 ms instead of 35 for ten minutes — is not a jump; it shows in Ping.
+
+Jumps are reported everywhere loss is: on the cards, in Recently, in the
+live hint's text and in the recommendation. They order paths that are
+equally stable. They never decide a switch by themselves: a switch costs a
+trip to character select, and the project's criterion (§10,
+Recommendation) is loss.
+
+**VPN server families** (`report.path_family`, `report.by_family`) — the
+cards, Recently and the recommendation judge VPN servers by family: the
+connection name without its trailing server number, so "ProtonVPN
+NL-FREE#244" and "ProtonVPN NL-FREE#221" are both "ProtonVPN NL-FREE".
+A family is what a person actually chooses (a country, a plan); a numbered
+server often cannot be picked again, and each alone gathers few minutes
+(12–40 judged minutes per Proton free server by 2026-11-10). The servers do
+differ — NL-FREE#1's far end answered in 42 ms, #221 and #244 in 35 ms —
+so the recommendation lists each family's servers under it, and the report
+and the Advanced table keep one column per server. Names without a number,
+and direct paths, are their own family.
+
 ### Live hint (`advice.live_hint`)
 
 For the busiest service (tray) and the chosen one (window), from the
@@ -491,7 +552,10 @@ Two of three rather than one: one bad minute is a blip, and a switch costs
 the user a trip to character select. Ten clean minutes before suggesting a
 return: the bad periods seen so far lasted minutes, so a shorter calm says
 little. A hint resting on the direct-path ping says so as long as the
-calibration (§8) is not confirmed. A change to **switch** or **return** is
+calibration (§8) is not confirmed. When the connection's ping jumped in
+`RECENT_BAD` of its last `RECENT_MINUTES` minutes on the path in use, the
+hint's text says so (from the last `HINT_JUMPY_LOOKBACK_S` 600 s of
+seconds); its level does not change. A change to **switch** or **return** is
 also a tray notification, once per change.
 
 ### Recommendation (`advice.recommend`, `vpnct recommend`, window)
@@ -519,13 +583,16 @@ without bad periods the direct path wins.
 2. **Not enough data** below `REC_MIN_DIRECT_MINUTES` (120) of exposure or
    `REC_MIN_SESSIONS` (3) sessions with it: one evening can be all calm or
    all bad, and the answer depends on how often bad evenings come.
-3. **VPN servers** with at least 10 judged minutes are ranked by bad-minute
-   fraction, then loss, then RTT. The RTT cost against the direct path says
+3. **VPN server families** with at least 10 judged minutes are ranked by
+   bad-minute fraction, then Jumpy level (as on the cards), then loss, then
+   RTT. Each is listed with how often its ping jumped next to the direct
+   path's, and with its servers. The RTT cost against the direct path says
    how many seconds of direct traffic it rests on, and that it is too few
    below ten minutes' worth.
 4. Verdict, with `frac` = bad direct minutes / exposure:
    - `frac` < `REC_RARE` (2 %): **stay direct** — a VPN costs latency every
-     minute to spare a few;
+     minute to spare a few; the headline names the best family's latency
+     cost and how often its ping jumped;
    - no ranked server: the direct path's rate, no server to name;
    - best server's bad fraction at least half of `frac`: **the VPN does not
      help**;
@@ -539,19 +606,35 @@ given.
 ### Recently (`advice.recent_view`, window)
 
 What each path did over the last 15 min, 1 h or 3 h of this session, from
-the window's in-memory history: per path of the connection's own traffic,
-judged minutes, minutes with loss and ping; while on a VPN, the direct-path
-monitor's minutes and lost-ping minutes; the latest route verdict. Then one
-conclusion:
+the window's in-memory history: per path (VPN servers by family) of the
+connection's own traffic, judged minutes, minutes with loss, jumpy minutes
+and ping; while on a VPN, the direct-path monitor's minutes, lost-ping
+minutes and minutes with a ping `SPIKE_MAX_MS` over the minute's median
+(raw ping, so a looser measure than the connection's smoothed RTT); the
+**Tunnel** line; the latest route verdict. Then one conclusion.
+
+The **Tunnel** line (`advice._tunnel_line`) counts the jumpy probe rounds
+(§8) to the VPN server through the tunnel (`vpn-gateway`) and outside it
+(`vpn-endpoint`), and says where the jumps start:
+
+| Rounds that jumped | Says |
+|---|---|
+| fewer than `TUNNEL_JUMPY_MIN` (2) on both sides | steady up to the VPN server — any jumps come from beyond it |
+| outside at least half as often as inside | the jumps start on the route to the VPN server |
+| inside only (or far more often) | the VPN server itself adds them (its load) |
+| nothing outside was pinged | where they start cannot be told |
+
+The window receives every probe round as an `engine.ProbePoint` through
+`Engine.drain_updates()`. The conclusion:
 
 | Traffic on | Situation | Conclusion |
 |---|---|---|
 | VPN | the VPN server lost packets in `RECENT_BAD` (2)+ minutes | try another server or the direct path |
 | VPN | the direct path lost pings in 2+ minutes, a trace saw real loss (or none ran yet — then said so) | the VPN spared you this, with where loss starts |
 | VPN | the direct path lost pings, but the trace saw only routers limiting replies | the direct path itself looked fine |
-| VPN | the direct path clean for all of at least `RECENT_MIN_CLEAN` (10) watched minutes | the VPN is not needed right now, with its RTT cost |
+| VPN | the direct path clean for all of at least `RECENT_MIN_CLEAN` (10) watched minutes | the VPN is not needed right now, with its RTT cost, and how often its ping jumped when that was `RECENT_BAD`+ minutes and above `JUMPY_FAIR_PCT` |
 | direct | 2+ minutes with loss | switch to the VPN, naming the best one so far |
-| direct | otherwise | stable |
+| direct | otherwise | stable (with the minutes the ping jumped, if any) |
 
 The RTT cost and the best VPN come from the cards (all sessions, the
 connection's own RTT on both paths): the monitor's ping RTT is not

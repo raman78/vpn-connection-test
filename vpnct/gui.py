@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCom
 
 from . import advice, config, report
 from .cli import MARK_SIGNAL, claim_pidfile, release_pidfile
-from .engine import Engine, MinutePoint, RouteResult, SecondPoint
+from .engine import Engine, MinutePoint, ProbePoint, RouteResult, SecondPoint
 from .monitor import MonitorMinute
 from .session import sessions_root
 from .tracker import Selection
@@ -140,6 +140,7 @@ class Store:
         self.monitor: deque = deque(maxlen=HISTORY_S // 60 * 8)
         self.hosts: dict[tuple, set] = defaultdict(set)
         self.routes: deque = deque(maxlen=500)
+        self.probes: deque = deque(maxlen=HISTORY_S // 60 * 20)
 
     def add(self, points: list) -> None:
         for pt in points:
@@ -148,6 +149,9 @@ class Store:
                 continue
             if isinstance(pt, RouteResult):
                 self.routes.append(pt)
+                continue
+            if isinstance(pt, ProbePoint):
+                self.probes.append(pt)
                 continue
             key = (pt.program, pt.port)
             if isinstance(pt, SecondPoint):
@@ -381,7 +385,7 @@ LEVEL_COLOURS = {"good": THEME["good"], "fair": THEME["warn"], "poor": THEME["ba
 
 
 class PathCardWidget(QFrame):
-    """One tested path: ping, spikes, stability, loss, how much data."""
+    """One tested path: ping, spikes, jumpy minutes, stability, loss, how much data."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -406,11 +410,14 @@ class PathCardWidget(QFrame):
         tips = {
             "Ping": "Median round-trip time to the server over the seconds with traffic.",
             "Spikes": "How far the ping jumps above its usual value: 95th percentile minus median.",
+            "Jumpy": "Share of minutes in which the ping jumped: within the minute, the 95th percentile "
+                     f"{report.SPIKE_SPREAD_MS:.0f} ms or one second {report.SPIKE_MAX_MS:.0f} ms over its "
+                     "median. Nothing need be lost in such a minute; it is counted apart from Stability.",
             "Stability": "Share of measured minutes without packet loss (a minute is lost-free below "
                          f"{report.CAL_TCP_BAD_PCT} % retransmitted).",
             "Loss": "Packets the server had to send again, of all it sent.",
         }
-        for i, name in enumerate(("Ping", "Spikes", "Stability", "Loss")):
+        for i, name in enumerate(("Ping", "Spikes", "Jumpy", "Stability", "Loss")):
             cap = label(name, "muted")
             cap.setToolTip(tips[name])
             val = label("–", "big")
@@ -426,10 +433,14 @@ class PathCardWidget(QFrame):
 
     def show_card(self, c: "advice.PathCard", now_on: bool) -> None:
         self.title.setText(c.title)
-        self.subtitle.setText(f"{c.subtitle}" + (" · in use now" if now_on else ""))
+        servers = (f" · {len(c.servers)} server{'s' if len(c.servers) != 1 else ''}" if c.servers else "")
+        self.subtitle.setText(f"{c.subtitle}{servers}" + (" · in use now" if now_on else ""))
+        self.subtitle.setToolTip(", ".join(c.servers))
         ms = lambda v, f="{:.0f} ms": "–" if v is None else f.format(v)
         self.values["Ping"].setText(ms(c.ping_ms))
         self.values["Spikes"].setText(ms(c.spikes_ms, "+{:.0f} ms"))
+        self.values["Jumpy"].setText(ms(c.jumpy_pct, "{:.0f} % of min"))
+        self.values["Jumpy"].setStyleSheet(f"color: {LEVEL_COLOURS[c.jumpy_level]}")
         self.values["Stability"].setText(ms(c.stability_pct, "{:.0f} %"))
         self.values["Loss"].setText(ms(c.loss_pct, "{:.2f} %"))
         self.values["Stability"].setStyleSheet(f"color: {LEVEL_COLOURS[c.stability_level]}")
@@ -471,6 +482,7 @@ class Window(QMainWindow):
         ("retrans / min", lambda g: report._n(g.retrans / (g.covered_s / 60) if g.covered_s else None, "{:.2f}")),
         ("loss gaps", lambda g: f"{g.lost_gaps}"),
         ("worst minute", lambda g: f"{g.worst_minute_pct:.1f} %"),
+        ("jumpy minutes", lambda g: f"{g.spiky_minutes} of {g.ping_minutes}"),
     ]
     BANNER = {  # level -> (background, accent, title)
         "switch": (THEME["bad_bg"], THEME["bad"], "Losing packets — switch to the VPN"),
@@ -799,7 +811,8 @@ class Window(QMainWindow):
         cards = getattr(self, "_cards", [])
         direct = next((c for c in cards if not c.is_vpn and c.ping_ms is not None), None)
         vpns = sorted((c for c in cards if c.is_vpn and c.enough),
-                      key=lambda c: (-(c.stability_pct or 0), c.ping_ms or 1e9))
+                      key=lambda c: (-(c.stability_pct or 0), advice._LEVEL_RANK[c.jumpy_level],
+                                     c.ping_ms or 1e9))
         best = vpns[0] if vpns else None
         cost = (best.ping_ms - direct.ping_ms
                 if best and direct and best.ping_ms is not None else None)
@@ -819,7 +832,7 @@ class Window(QMainWindow):
             self.cards_lay.addWidget(wdg)
         now_path = getattr(self, "_now_path", None)
         for wdg, c in zip(self.cards, cards):
-            wdg.show_card(c, c.path == now_path)
+            wdg.show_card(c, now_path is not None and c.path == report.path_family(now_path))
             wdg.show()
         for wdg in self.cards[len(cards):]:
             wdg.hide()
@@ -922,8 +935,9 @@ class Window(QMainWindow):
             best = rec.ranking[0]
             name, _itf = advice.path_title(best.path)
             rtt = f", ping {best.rtt_p50:.0f} ms" if best.rtt_p50 is not None else ""
+            jumpy = f", ping jumped in {best.jumpy_pct:.0f} % of minutes" if best.jumpy_pct is not None else ""
             self.rec_sub.setText(f"Best VPN measured so far: {name} — {100 - 100 * best.bad_fraction:.0f} % "
-                                 f"stable{rtt}, {best.minutes} min. Full reasoning under Advanced.")
+                                 f"stable{rtt}{jumpy}, {best.minutes} min. Full reasoning under Advanced.")
         else:
             self.rec_sub.setText("Full reasoning under Advanced.")
 
@@ -998,7 +1012,7 @@ class App:
         cal = self.window.summary["calibration"].status if self.window.summary else "unconfirmed"
         cost = self.rtt_cost(key)
         return advice.live_hint(self.store.minutes.get(key, []), self.store.monitor_for(key),
-                                self.store.on_vpn_now(key), cal, cost)
+                                self.store.on_vpn_now(key), cal, cost, self.store.seconds.get(key, []))
 
     def rtt_cost(self, key: tuple) -> float | None:
         """VPN minus direct RTT median for the service in this session, when
@@ -1050,7 +1064,7 @@ class App:
         view = advice.recent_view(self.store.minutes.get(key, []), self.store.seconds.get(key, []),
                                   self.store.monitor_for(key), self.store.routes_for(key),
                                   self.store.on_vpn_now(key), self.window.recent_window_s(),
-                                  time.time(), cost, best)
+                                  time.time(), cost, best, list(self.store.probes))
         self.window.show_recent(view)
 
     def update_tray(self, snap) -> None:

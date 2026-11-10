@@ -9,6 +9,14 @@ connection's own traffic, at least CAL_TCP_BAD_PCT retransmitted of at
 least CAL_MIN_DATA data packets over a fully captured minute; for the
 direct-path watch, at least CAL_PING_BAD_PCT of a minute's pings lost.
 
+A *jumpy minute* (`report.spiky`) is counted beside it, never instead of
+it: the connection's ping jumped within the minute although nothing need
+have been lost. It is reported everywhere loss is, and orders paths that
+are equally stable; whether to switch is still decided by loss alone.
+
+VPN servers are judged by family (`report.path_family`): the servers of
+one connection-name family, e.g. every "ProtonVPN NL-FREE#<n>", together.
+
 The thresholds below are judgement calls, named so they can be changed in
 one place; docs/ARCHITECTURE.md §10 gives the reasoning for each.
 """
@@ -18,13 +26,15 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from .report import (CAL_MIN_COVER_S, CAL_MIN_PINGS, CAL_PING_BAD_PCT, Group, MinuteAgg,
-                     by_service, loss_pct, percentile)
+from .report import (CAL_MIN_COVER_S, CAL_MIN_PINGS, CAL_PING_BAD_PCT, PROBE_SPIKE_MS,
+                     SPIKE_MAX_MS, Group, MinuteAgg, RttMinute, by_family, by_service, loss_pct,
+                     path_family, percentile)
 
 # Live hint
 RECENT_MINUTES = 3          # look at the last this many judged minutes
 RECENT_BAD = 2              # this many bad among them means "losing now"
 CLEAN_MINUTES = 10          # direct watch clean this long before "you may return"
+HINT_JUMPY_LOOKBACK_S = 600 # seconds of history the hint reads for ping jumps
 
 # Recommendation
 REC_MIN_DIRECT_MINUTES = 120    # direct-path minutes needed before any verdict
@@ -32,6 +42,30 @@ REC_MIN_SESSIONS = 3            # spread over at least this many sessions
 REC_MIN_SERVER_MINUTES = 10     # a VPN server needs this many judged minutes to be ranked
 REC_RARE = 0.02                 # direct bad less often than this: stay direct
 REC_OFTEN = 0.10                # direct bad at least this often: VPN always
+
+# Jumpy minutes: share of a path's minutes (measured on the recordings: the
+# direct path 1 %, Proton free servers 14-34 %)
+JUMPY_FAIR_PCT = 5.0            # under this: a steady ping
+JUMPY_POOR_PCT = 20.0           # at or above: a jumpy ping
+
+
+def jumpy_level(pct: float | None) -> str:
+    if pct is None:
+        return "unknown"
+    return "good" if pct < JUMPY_FAIR_PCT else "fair" if pct < JUMPY_POOR_PCT else "poor"
+
+
+_LEVEL_RANK = {"good": 0, "fair": 1, "poor": 2, "unknown": 3}
+
+
+def _jumpy_minutes(seconds) -> dict[tuple, RttMinute]:
+    """SecondPoints -> {(minute, path family): RttMinute}, data seconds only."""
+    out: dict[tuple, RttMinute] = {}
+    for s in seconds:
+        if s.rtt_ms is not None and s.d_data_segs_in > 0:
+            out.setdefault((int(s.time // 60) * 60, path_family(s.path)), RttMinute()).add(
+                (s.host, s.local_port), s.rtt_ms)
+    return out
 
 
 # ---- live hint -----------------------------------------------------------------
@@ -68,12 +102,34 @@ def _watch_minutes(monitor) -> list[tuple[float, bool, float]]:
 
 
 def live_hint(minutes, monitor, on_vpn: bool | None, calibration: str,
-              rtt_cost_ms: float | None = None) -> Hint:
+              rtt_cost_ms: float | None = None, seconds=()) -> Hint:
     """`minutes`: the service's MinutePoints; `monitor`: MonitorMinutes for its
     servers; `on_vpn`: the path its traffic uses now (None: no traffic);
-    `calibration`: report.Calibration.status."""
+    `calibration`: report.Calibration.status; `seconds`: its SecondPoints,
+    for whether the ping is jumping (said in the text, never a switch by
+    itself: a switch costs a trip to character select)."""
     if on_vpn is None:
         return Hint("unknown", "no traffic on this service right now")
+    hint = _live_hint(minutes, monitor, on_vpn, calibration, rtt_cost_ms)
+    tail = []                      # the last few minutes are enough, and this runs every second
+    newest = None
+    for pt in reversed(seconds):
+        newest = pt.time if newest is None else newest
+        if pt.time < newest - HINT_JUMPY_LOOKBACK_S:
+            break
+        tail.append(pt)
+    judged = [m for (_t, f), m in sorted(_jumpy_minutes(tail).items())
+              if m.judged and f.startswith("vpn:" if on_vpn else "direct:")][-RECENT_MINUTES:]
+    jumpy = sum(m.spiky for m in judged)
+    if jumpy >= RECENT_BAD:
+        where = "this VPN server's" if on_vpn else "the direct path's"
+        hint.text += (f" The ping on {where} connection jumped in {jumpy} of the last "
+                      f"{len(judged)} minutes.")
+    return hint
+
+
+def _live_hint(minutes, monitor, on_vpn: bool, calibration: str,
+               rtt_cost_ms: float | None) -> Hint:
     tcp = [t for t in _tcp_minutes(minutes) if t[1] == on_vpn][-RECENT_MINUTES:]
     watch = _watch_minutes(monitor)
     recent_watch = watch[-RECENT_MINUTES:]
@@ -121,11 +177,18 @@ def live_hint(minutes, monitor, on_vpn: bool | None, calibration: str,
 
 @dataclass
 class ServerRank:
-    path: str
+    path: str                  # a family of VPN servers (report.path_family)
     minutes: int
     bad: int
     loss: float | None
     rtt_p50: float | None
+    ping_minutes: int = 0
+    jumpy_minutes: int = 0
+    members: tuple = ()        # the servers' own paths
+
+    @property
+    def jumpy_pct(self) -> float | None:
+        return 100.0 * self.jumpy_minutes / self.ping_minutes if self.ping_minutes else None
 
     @property
     def bad_fraction(self) -> float:
@@ -157,7 +220,8 @@ def _recommend(summary: dict, service: tuple[str, str]) -> tuple[Recommendation,
     sessions, by the criterion in the project plan: a VPN is worth it if it
     keeps loss near zero in the periods the direct path is bad, at an
     acceptable latency; without bad periods the direct path wins."""
-    paths: dict[str, Group] = by_service(summary["groups"]).get(service, {})
+    servers: dict[str, Group] = by_service(summary["groups"]).get(service, {})
+    paths: dict[str, Group] = by_family(servers)
     direct = {p: g for p, g in paths.items() if p.startswith("direct:")}
     vpn = {p: g for p, g in paths.items() if p.startswith("vpn:")}
     cal = summary["calibration"]
@@ -186,11 +250,22 @@ def _recommend(summary: dict, service: tuple[str, str]) -> tuple[Recommendation,
                      for s in mg.sessions_on_vpn}
 
     ranking = sorted(
-        (ServerRank(p, g.judged_minutes, g.bad_minutes, loss_pct(g), percentile(g.rtts, .5))
+        (ServerRank(p, g.judged_minutes, g.bad_minutes, loss_pct(g), percentile(g.rtts, .5),
+                    g.ping_minutes, g.spiky_minutes, tuple(sorted(g.members)))
          for p, g in vpn.items() if g.judged_minutes >= REC_MIN_SERVER_MINUTES),
-        key=lambda r: (r.bad_fraction, r.loss if r.loss is not None else 100, r.rtt_p50 or 1e9))
+        key=lambda r: (r.bad_fraction, _LEVEL_RANK[jumpy_level(r.jumpy_pct)],
+                       r.loss if r.loss is not None else 100, r.rtt_p50 or 1e9))
     d_rtts = [x for g in direct.values() for x in g.rtts]
     d_rtt = percentile(d_rtts, .5)
+    d_ping = sum(g.ping_minutes for g in direct.values())
+    d_jumpy = sum(g.spiky_minutes for g in direct.values())
+
+    def jumps(r: ServerRank) -> str:
+        """How often its ping jumped, next to the direct path's."""
+        if r.jumpy_pct is None:
+            return "ping jumps unknown"
+        direct_part = (f" (direct {100 * d_jumpy / d_ping:.0f} %)" if d_ping else "")
+        return f"ping jumped in {r.jumpy_pct:.0f} % of minutes{direct_part}"
 
     def cost(r: ServerRank) -> str:
         """RTT difference to the direct path, with how much direct data it rests on."""
@@ -215,7 +290,15 @@ def _recommend(summary: dict, service: tuple[str, str]) -> tuple[Recommendation,
         loss = f"{r.loss:.2f}%" if r.loss is not None else "-"
         rtt = f"{r.rtt_p50:.0f} ms" if r.rtt_p50 is not None else "-"
         details.append(f"{r.path}: {r.minutes} judged min, bad {r.bad} "
-                       f"({100 * r.bad_fraction:.1f}%), loss {loss}, RTT {rtt}, vs direct {cost(r)}")
+                       f"({100 * r.bad_fraction:.1f}%), loss {loss}, RTT {rtt}, vs direct {cost(r)}, "
+                       f"{jumps(r)}")
+        if len(r.members) > 1 or (r.members and r.members[0] != r.path):
+            parts = []
+            for m in r.members:
+                g = servers[m]
+                jp = f", jumpy {100 * g.spiky_minutes / g.ping_minutes:.0f} %" if g.ping_minutes else ""
+                parts.append(f"{m.partition(' [')[2].rstrip(']')} {g.judged_minutes} min{jp}")
+            details.append(f"servers in {r.path}: " + "; ".join(parts))
     short = [p for p, g in vpn.items() if g.judged_minutes < REC_MIN_SERVER_MINUTES]
     if short:
         details.append("not ranked (under %d judged minutes): %s" % (REC_MIN_SERVER_MINUTES, ", ".join(short)))
@@ -231,7 +314,8 @@ def _recommend(summary: dict, service: tuple[str, str]) -> tuple[Recommendation,
     frac = bad / exposure
     rate = f"bad in {bad} of {exposure} minutes ({100 * frac:.1f}%)"
     if frac < REC_RARE:
-        best = f"; the best VPN server would cost {cost(ranking[0])}" if ranking else ""
+        best = (f"; the best VPN server would cost {cost(ranking[0])}, and its {jumps(ranking[0])}"
+                if ranking else "")
         return (Recommendation("stay-direct", f"Stay on the direct path: it was {rate}{best}.",
                               details, ranking), provisional)
     if not ranking:
@@ -298,8 +382,15 @@ class PathCard:
     judged_minutes: int
     sessions: int          # sessions with judged minutes on this path
     enough: bool           # judged long enough to be compared
+    jumpy_pct: float | None = None   # minutes in which the ping jumped, of those with enough seconds
+    ping_minutes: int = 0
+    servers: tuple = ()    # the VPN servers this card stands for (a family)
     best: bool = False
     best_reason: str = ""
+
+    @property
+    def jumpy_level(self) -> str:
+        return jumpy_level(self.jumpy_pct)
 
     @property
     def stability_level(self) -> str:
@@ -320,11 +411,12 @@ def path_title(path: str) -> tuple[str, str]:
 
 
 def path_cards(paths: dict[str, Group]) -> list[PathCard]:
-    """Cards for a service's paths, direct first. `best` goes to one path
-    only when at least two paths have enough judged minutes to compare:
-    fewest bad minutes, then lowest ping, then least loss."""
+    """Cards for a service's paths, direct first, one per VPN server family.
+    `best` goes to one path only when at least two paths have enough judged
+    minutes to compare: fewest bad minutes, then the steadier ping (by
+    jumpy level), then lowest ping, then least loss."""
     cards = []
-    for path, g in paths.items():
+    for path, g in by_family(paths).items():
         if not (path.startswith("direct:") or path.startswith("vpn:")):
             continue                         # gone(...): an address that vanished mid-switch
         judged = g.judged_minutes
@@ -334,17 +426,25 @@ def path_cards(paths: dict[str, Group]) -> list[PathCard]:
             path, title, sub, path.startswith("vpn:"), p50,
             (p95 - p50) if p50 is not None and p95 is not None else None,
             100.0 * (judged - g.bad_minutes) / judged if judged else None,
-            loss_pct(g), judged, len(g.judged_sessions), judged >= REC_MIN_SERVER_MINUTES))
-    # Stability decides; among equally stable paths the lower ping wins, since
-    # loss below the bad-minute threshold is not felt; loss only breaks a tie.
+            loss_pct(g), judged, len(g.judged_sessions), judged >= REC_MIN_SERVER_MINUTES,
+            100.0 * g.spiky_minutes / g.ping_minutes if g.ping_minutes else None, g.ping_minutes,
+            tuple(sorted(m.partition(" [")[2].rstrip("]") for m in g.members if m != path))))
+    # Stability decides; among equally stable paths the steadier ping, then the
+    # lower ping wins, since loss below the bad-minute threshold is not felt;
+    # loss only breaks a tie.
+    rank = lambda c: _LEVEL_RANK[c.jumpy_level]
     ranked = sorted((c for c in cards if c.enough),
-                    key=lambda c: (-(c.stability_pct or 0), c.ping_ms if c.ping_ms is not None else 1e9,
+                    key=lambda c: (-(c.stability_pct or 0), rank(c),
+                                   c.ping_ms if c.ping_ms is not None else 1e9,
                                    c.loss_pct if c.loss_pct is not None else 100))
     if len(ranked) >= 2:
         first, others = ranked[0], ranked[1:]
         first.best = True
-        if all((first.stability_pct or 0) > (o.stability_pct or 0) for o in others):
+        equal = [o for o in others if (o.stability_pct or 0) >= (first.stability_pct or 0)]
+        if not equal:
             first.best_reason = "most stable"
+        elif all(rank(first) < rank(o) for o in equal):
+            first.best_reason = "as stable, steadier ping"
         else:
             first.best_reason = "as stable, lowest ping"
     return sorted(cards, key=lambda c: (c.is_vpn, c.title))
@@ -370,13 +470,16 @@ class RecentView:
 
 
 def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s: float,
-                now: float, rtt_cost_ms: float | None = None, best_vpn: str | None = None) -> RecentView:
+                now: float, rtt_cost_ms: float | None = None, best_vpn: str | None = None,
+                probes=()) -> RecentView:
     """What each path did over the last `window_s` seconds of this session.
 
     `minutes`/`seconds`: the service's MinutePoints/SecondPoints; `monitor`:
-    MonitorMinutes for its servers; `routes`: engine.RouteResults for them.
-    `rtt_cost_ms`: VPN minus direct RTT of the connection itself, if known
-    (ping RTT and the connection's RTT are not comparable)."""
+    MonitorMinutes for its servers; `routes`: engine.RouteResults for them;
+    `probes`: engine.ProbePoints (the tunnel's far end, inside and outside
+    the tunnel). `rtt_cost_ms`: VPN minus direct RTT of the connection
+    itself, if known (ping RTT and the connection's RTT are not comparable).
+    VPN servers of one family share a line (`report.path_family`)."""
     t0 = now - window_s
     lines: list[RecentLine] = []
 
@@ -385,26 +488,37 @@ def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s
     vpn_of: dict[str, bool] = {}
     for m in minutes:
         if m.minute >= t0:
-            agg.setdefault((m.minute, m.path), MinuteAgg()).add(
+            fam = path_family(m.path)
+            agg.setdefault((m.minute, fam), MinuteAgg()).add(
                 (m.host, m.local_port), m.data_pkts, m.retrans, m.covered_s)
-            vpn_of[m.path] = m.is_vpn
+            vpn_of[fam] = m.is_vpn
     rtts: dict[str, list[float]] = {}
     for s in seconds:
         if s.time >= t0 and s.rtt_ms is not None and s.d_data_segs_in > 0:
-            rtts.setdefault(s.path, []).append(s.rtt_ms)
+            rtts.setdefault(path_family(s.path), []).append(s.rtt_ms)
+    jumpy: dict[str, list[bool]] = {}
+    for (minute, fam), rm in _jumpy_minutes(s for s in seconds if s.time >= t0).items():
+        if rm.judged:
+            jumpy.setdefault(fam, []).append(rm.spiky)
     per_path: dict[str, list[MinuteAgg]] = {}
     for (_minute, path), a in agg.items():
         if a.judged:
             per_path.setdefault(path, []).append(a)
     own_bad: dict[str, tuple[int, int]] = {}
+    own_jumpy: dict[str, tuple[int, int]] = {}
     for path in sorted(per_path, key=lambda p: (vpn_of[p], p)):
         judged = per_path[path]
         bad = sum(a.bad for a in judged)
         own_bad[path] = (bad, len(judged))
+        jm = jumpy.get(path, [])
+        own_jumpy[path] = (sum(jm), len(jm))
         rtt = percentile(rtts.get(path, []), .5)
         title, _itf = path_title(path)
         lvl = "good" if bad == 0 else "fair" if bad == 1 else "poor"
+        if bad == 0 and jm and jumpy_level(100.0 * sum(jm) / len(jm)) != "good":
+            lvl = "fair"
         lines.append(RecentLine(lvl, title, f"{len(judged)} min measured, packets lost in {bad}"
+                                + (f", ping jumped in {sum(jm)} of {len(jm)}" if jm else "")
                                 + (f", ping {rtt:.0f} ms" if rtt is not None else "")))
 
     # the direct path watched by ping (meaningful while the traffic is on a VPN)
@@ -417,9 +531,16 @@ def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s
     if watch and (on_vpn or not per_path):
         worst = max(w for _m, _b, w in watch)
         lvl = "good" if w_bad == 0 else "fair" if w_bad == 1 else "poor"
+        w_jumpy = len({m.minute for m in monitor if m.minute >= t0 and m.sent >= CAL_MIN_PINGS
+                       and m.rtt_p50 is not None and m.rtt_max is not None
+                       and m.rtt_max - m.rtt_p50 >= SPIKE_MAX_MS})
         lines.append(RecentLine(lvl, "Direct (ping in the background)",
                                 f"{len(watch)} min watched, pings lost in {w_bad}"
-                                + (f" (worst {worst:.0f} %)" if w_bad else "")))
+                                + (f" (worst {worst:.0f} %)" if w_bad else "")
+                                + f", a ping {SPIKE_MAX_MS:.0f}+ ms over usual in {w_jumpy}"))
+    tunnel = _tunnel_line([p for p in probes if p.time >= t0])
+    if tunnel:
+        lines.append(tunnel)
     if route_list:
         last = (real or route_list)[-1]
         lvl = "poor" if last.verdict.kind in ("real", "target-only") else "good"
@@ -436,6 +557,9 @@ def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s
         vpn_paths = [p for p in own_bad if vpn_of[p]]
         vbad = sum(own_bad[p][0] for p in vpn_paths)
         vmin = sum(own_bad[p][1] for p in vpn_paths)
+        vj, vjn = (sum(own_jumpy[p][0] for p in vpn_paths), sum(own_jumpy[p][1] for p in vpn_paths))
+        jumps = (f" Its ping jumped in {vj} of {vjn} minutes."
+                 if vjn and vj >= RECENT_BAD and jumpy_level(100.0 * vj / vjn) != "good" else "")
         if vbad >= RECENT_BAD:
             return RecentView(lines, Hint("return", f"This VPN server lost packets in {vbad} of {vmin} "
                                                     f"minutes — try another server or the direct path."))
@@ -449,8 +573,10 @@ def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s
                                                 f"the direct path itself looked fine."))
         if len(watch) >= RECENT_MIN_CLEAN and w_bad == 0:
             return RecentView(lines, Hint("return", f"The direct path was clean for all {len(watch)} watched "
-                                                    f"minutes — the VPN is not needed right now{cost}."))
-        return RecentView(lines, Hint("unknown", f"The VPN is clean; the direct path has {len(watch)} of "
+                                                    f"minutes — the VPN is not needed right now{cost}.{jumps}"))
+        state = "lost nothing" if not jumps else "lost nothing, but its ping jumped in " \
+                f"{vj} of {vjn} minutes"
+        return RecentView(lines, Hint("unknown", f"The VPN {state}; the direct path has {len(watch)} of "
                                                  f"{RECENT_MIN_CLEAN} watched minutes needed to judge it."))
     dbad, dmin = (sum(own_bad[p][0] for p in own_bad if not vpn_of[p]),
                   sum(own_bad[p][1] for p in own_bad if not vpn_of[p]))
@@ -460,8 +586,37 @@ def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s
                                                 f"{where} — switch to the VPN{to}."))
     if dmin == 0:
         return RecentView(lines, Hint("unknown", f"Not enough measured minutes in the last {span} yet."))
+    dj = sum(own_jumpy[p][0] for p in own_jumpy if not vpn_of[p])
+    jumps = f", ping jumped in {dj}" if dj else ""
     return RecentView(lines, Hint("ok", f"The direct path was stable in the last {span} "
-                                        f"({dmin} min, packets lost in {dbad})."))
+                                        f"({dmin} min, packets lost in {dbad}{jumps})."))
+
+
+TUNNEL_JUMPY_MIN = 2        # jumpy rounds needed before saying where the jumps come from
+
+
+def _tunnel_line(probes) -> RecentLine | None:
+    """Where a VPN's ping jumps start: its far end pinged through the tunnel
+    (role vpn-gateway) and its public address pinged outside it (role
+    vpn-endpoint). Jumps outside too: the route to the VPN server; inside
+    only: the VPN server itself (its load); neither: beyond the server."""
+    inside = [p for p in probes if p.role.startswith("vpn-gateway(") and p.timed]
+    outside = [p for p in probes if p.role.startswith("vpn-endpoint(") and p.timed]
+    if not inside and not outside:
+        return None
+    ji, jo = sum(p.jumpy for p in inside), sum(p.jumpy for p in outside)
+    counts = (f"pings to the VPN server jumped in {ji} of {len(inside)} rounds through the tunnel, "
+              f"{jo} of {len(outside)} outside it")
+    if not outside:
+        return RecentLine("unknown", "Tunnel", f"pings to the VPN server jumped in {ji} of {len(inside)} "
+                                               f"rounds through the tunnel; it was not pinged outside the "
+                                               f"tunnel, so where the jumps start cannot be told")
+    if ji < TUNNEL_JUMPY_MIN and jo < TUNNEL_JUMPY_MIN:
+        return RecentLine("good", "Tunnel", counts + " — steady up to the VPN server")
+    if jo * len(inside) >= ji * len(outside) / 2:
+        return RecentLine("fair", "Tunnel", counts + " — the jumps start on the route to the VPN server")
+    return RecentLine("fair", "Tunnel", counts + " — the jumps appear only inside the tunnel: the VPN "
+                                                 "server itself adds them")
 
 
 def _span_text(window_s: float) -> str:

@@ -72,14 +72,15 @@ desktop notification says so, once per change.
 │ safe moment.              Now on: direct:eth0   ping 32 ms       │
 ├──────────────────────────────────────────────────────────────────┤
 │ Recently                            [15 min] [1 h] [3 h]         │
-│  direct      40 min, packets lost in 3                           │
+│  direct      40 min, packets lost in 3, ping jumped in 0 of 40   │
 │  The direct path lost packets in 3 of 40 minutes — switch to the │
-│  VPN (VPN · NO#2).                                               │
+│  VPN (VPN · NO).                                                 │
 ├──────────────────────────────────────────────────────────────────┤
 │ Tested paths                        [This session] [All sessions]│
-│ ┌ Direct ──────────┐ ┌ VPN · NO#2 ★ Best ┐ ┌ VPN · NL#89 ─────┐  │
+│ ┌ Direct ──────────┐ ┌ VPN · NO ★ Best ──┐ ┌ VPN · NL ────────┐  │
 │ │ Ping     32 ms   │ │ Ping     43 ms    │ │ Ping     45 ms   │  │
 │ │ Spikes   3 ms    │ │ Spikes   7 ms     │ │ Spikes   9 ms    │  │
+│ │ Jumpy    1 %     │ │ Jumpy    8 %      │ │ Jumpy    29 %    │  │
 │ │ Stability 90 %   │ │ Stability 100 %   │ │ Stability 100 %  │  │
 │ │ Loss     0.40 %  │ │ Loss     0.00 %   │ │ Loss     0.01 %  │  │
 │ └──────────────────┘ └───────────────────┘ └──────────────────┘  │
@@ -102,10 +103,19 @@ are, or go back. Under it, the path in use and its ping.
 ### Recently
 
 What each path did over the last 15 minutes, hour or three hours of this
-session, ending in one conclusion. While you play through a VPN it also
+session, ending in one conclusion: in how many minutes packets were lost,
+and in how many the ping jumped. While you play through a VPN it also
 says whether your normal connection was losing packets meanwhile, and if a
 route trace ran, where on the route the loss started — or that it was only
-a router answering pings sparingly. Typical conclusions:
+a router answering pings sparingly.
+
+The **Tunnel** line says where a VPN's ping jumps come from. The program
+pings the VPN server twice: through the tunnel, and directly at the
+server's public address, outside the tunnel. If the pings jump outside the
+tunnel too, the jumps start on the way to the VPN server; if they jump only
+inside, the VPN server itself adds them — busy free servers do. If neither
+jumps, the jumps you see come from further on, between the VPN server and
+the game. Typical conclusions:
 
 | Conclusion | What it means |
 |---|---|
@@ -118,19 +128,25 @@ a router answering pings sparingly. Typical conclusions:
 
 ### The cards
 
-One card per path you have used: your normal connection and each VPN
-server separately.
+One card per path you have used: your normal connection, and each VPN
+server family — all the servers whose names differ only in their number,
+such as every "NL-FREE#…" server, share one card. That is what you can
+choose between; a single numbered server often cannot be picked again, and
+alone it gathers few minutes. Hover over the line under the title to see
+which servers a card includes; **Advanced** keeps each server apart.
 
 | Number | What it tells you |
 |---|---|
 | **Ping** | the usual round trip of the connection, in milliseconds |
 | **Spikes** | how far the ping jumps above its usual value at its worst moments (the worst 5 %) |
+| **Jumpy** | the share of minutes in which the ping jumped — even when nothing was lost |
 | **Stability** | the share of minutes in which no noticeable packet loss happened |
 | **Loss** | lost packets out of all packets received |
 
 **★ Best** goes to the most stable path. Among equally stable paths the
-one with the lowest ping wins, because small loss below the noticeable
-level is not felt, while latency is felt all the time. The star appears
+one whose ping jumps least wins (green under 5 % of minutes, amber under
+20 %, red above), then the one with the lowest ping, because small loss
+below the noticeable level is not felt, while latency is felt all the time. The star appears
 only once at least two paths have enough data; a path without enough says
 "Little data".
 
@@ -141,14 +157,27 @@ A minute counts as having loss when at least half a percent of its packets
 were lost. For the background ping of your normal connection the bar is
 3 % of the pings, because a few lost pings are normal.
 
+A minute counts as **jumpy** when, within that minute, the ping rose
+clearly above its own usual level: for the slowest few seconds 10 ms or
+more, or for a single second 30 ms or more. A ping that sits higher for a
+whole stretch is not a jump; it shows as a higher **Ping**. Your normal
+connection is jumpy in about 1 % of minutes; free VPN servers measured so
+far in 14–34 %.
+
+Jumps are shown everywhere and help pick the best path, but they never ask
+you to switch by themselves; only lost packets do, since a switch means
+going back to character select.
+
 ### The recommendation
 
-At the bottom, drawn from all your recordings:
+At the bottom, drawn from all your recordings. It names a VPN server
+family, and says how often its ping jumped next to your normal
+connection's:
 
 | Recommendation | When |
 |---|---|
 | Stay on the direct path | your normal connection rarely has bad minutes; a VPN would cost latency every minute to spare a few |
-| Use the VPN | bad minutes on the normal connection are frequent, and the named VPN server avoids them |
+| Use the VPN | bad minutes on the normal connection are frequent, and the named VPN server family avoids them |
 | Use the VPN only when the direct path is losing | bad periods come now and then; follow the banner's hints |
 | The VPN does not help | the VPN servers tried lose about as often as the normal connection |
 | … no VPN server has enough data | your normal connection has bad minutes, but no VPN server has been used long enough to compare |

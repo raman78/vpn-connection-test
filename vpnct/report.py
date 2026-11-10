@@ -4,13 +4,16 @@ Connections are grouped by (program, remote port, path). The remote port
 stands for the service — a game talks to several servers for different
 purposes, and its main server's numbers must not be averaged with a
 telemetry endpoint's. The path is the interface plus the VPN server name,
-so every VPN server is its own column.
+so every VPN server is its own column here; `by_family` joins the servers
+of one family (`path_family`) for the cards and the recommendation.
 
 Numbers and where they come from:
 - RTT p50/p95: kernel RTT (`samples.csv`), only seconds in which data arrived
   (the kernel updates RTT only on traffic);
 - loss: retransmissions by the remote end per captured data packet
   (`losses.csv`), and per minute of capture; gaps alongside;
+- jumpy minutes: minutes in which a connection's per-second RTT jumped
+  against the minute's own median (`spiky`);
 - probes and hops: ping results per target and path (`probes.csv`,
   `hops.csv`);
 - direct-path monitor (`monitor.csv`): per target and minute, ping loss on
@@ -25,6 +28,7 @@ Numbers and where they come from:
 from __future__ import annotations
 
 import csv
+import re
 import statistics
 from datetime import datetime
 from collections import defaultdict
@@ -75,6 +79,12 @@ class MinuteAgg:
         self.retrans += retrans
         self._cover[connection] = self._cover.get(connection, 0.0) + covered_s
 
+    def merge(self, other: "MinuteAgg") -> None:
+        self.data += other.data
+        self.retrans += other.retrans
+        for c, v in other._cover.items():
+            self._cover[c] = self._cover.get(c, 0.0) + v
+
     @property
     def cover(self) -> float:
         return min((min(60.0, c) for c in self._cover.values()), default=0.0)
@@ -86,6 +96,50 @@ class MinuteAgg:
     @property
     def bad(self) -> bool:
         return self.judged and 100.0 * self.retrans / self.data >= CAL_TCP_BAD_PCT
+
+
+SPIKE_SPREAD_MS = 10.0     # RTT p95 minus median within one minute: the ping is jumping
+SPIKE_MAX_MS = 30.0        # or one second this far above the minute's median
+SPIKE_MIN_SECONDS = 30     # seconds with data a connection needs in a minute to judge its ping
+
+
+def spiky(rtts: list[float]) -> bool | None:
+    """Did the ping jump within this minute of one connection? None: too few
+    seconds with data to tell. Measured against the minute's own median, not
+    the connection's minimum RTT: TCP RTT sits a steady few milliseconds above
+    the minimum on some paths (delayed acknowledgements), and that offset is
+    not a jump."""
+    if len(rtts) < SPIKE_MIN_SECONDS:
+        return None
+    med = percentile(rtts, .5)
+    return percentile(rtts, .95) - med >= SPIKE_SPREAD_MS or max(rtts) - med >= SPIKE_MAX_MS
+
+
+class RttMinute:
+    """The per-second RTTs of one minute, per connection: connections to
+    different servers sit at different levels, so each is judged on its own.
+    The minute is judged when any connection had enough seconds, and jumpy
+    when any judged connection jumped."""
+
+    __slots__ = ("rtts",)
+
+    def __init__(self) -> None:
+        self.rtts: dict = {}
+
+    def add(self, connection, rtt: float) -> None:
+        self.rtts.setdefault(connection, []).append(rtt)
+
+    def merge(self, other: "RttMinute") -> None:
+        for c, v in other.rtts.items():
+            self.rtts.setdefault(c, []).extend(v)
+
+    @property
+    def judged(self) -> bool:
+        return any(spiky(v) is not None for v in self.rtts.values())
+
+    @property
+    def spiky(self) -> bool:
+        return any(spiky(v) for v in self.rtts.values())
 
 
 @dataclass
@@ -102,6 +156,17 @@ class Group:
     retrans: int = 0
     worst_minute_pct: float = 0.0
     minute_tcp: dict = field(default_factory=dict)      # (session, minute) -> MinuteAgg
+    minute_rtt: dict = field(default_factory=dict)      # (session, minute) -> RttMinute
+    members: set = field(default_factory=set)           # paths merged into this group (by_family)
+
+    @property
+    def ping_minutes(self) -> int:
+        """Minutes with enough seconds of data to say whether the ping jumped."""
+        return sum(m.judged for m in self.minute_rtt.values())
+
+    @property
+    def spiky_minutes(self) -> int:
+        return sum(m.spiky for m in self.minute_rtt.values())
 
     @property
     def judged_minutes(self) -> int:
@@ -140,6 +205,11 @@ class ProbeGroup:
     rtts: list = field(default_factory=list)
     errors: list = field(default_factory=list)
     replies: int = 0          # rounds in which at least one reply came back
+    timed: int = 0            # rounds with a minimum and maximum RTT
+    jumpy: int = 0            # of those, rounds whose slowest reply was PROBE_SPIKE_MS over the fastest
+
+    def jumpy_text(self) -> str:
+        return f"{self.jumpy}/{self.timed}" if self.timed else "-"
 
     @property
     def never_answers(self) -> bool:
@@ -147,6 +217,8 @@ class ProbeGroup:
         ping at all. That is not packet loss and must not read as 100 %."""
         return bool(self.losses) and self.replies == 0
 
+
+PROBE_SPIKE_MS = 20.0        # a ping round whose slowest reply is this much over its fastest jumped
 
 CAL_TCP_BAD_PCT = 0.5        # a minute with at least this TCP loss is "bad"
 CAL_PING_BAD_PCT = 3.0       # ping loss counted as "the path is losing" (2+ of 60)
@@ -309,6 +381,8 @@ def summarise(session_dirs: list[Path]) -> dict:
                 rtt = _f(r["rtt_ms"])
                 if rtt is not None:
                     g.rtts.append(rtt)
+                    g.minute_rtt.setdefault((d.name, r["time"][:16]), RttMinute()).add(
+                        (r["local"], r["remote"]), rtt)
         for r in _read(d / "losses.csv"):
             g = groups[(r["program"], _port(r["remote"]), r["path"])]
             ck = (d.name, r["minute"], r["interface"])
@@ -334,6 +408,10 @@ def summarise(session_dirs: list[Path]) -> dict:
                     pg.replies += int(r["received"] or 0) > 0
                 if _f(r["rtt_avg"]) is not None:
                     pg.rtts.append(float(r["rtt_avg"]))
+                lo, hi = _f(r.get("rtt_min")), _f(r.get("rtt_max"))
+                if lo is not None and hi is not None:
+                    pg.timed += 1
+                    pg.jumpy += hi - lo >= PROBE_SPIKE_MS
         for r in _read(d / "hops.csv"):
             if not r["hop"]:
                 continue
@@ -405,6 +483,59 @@ def by_service(groups: dict) -> dict[tuple[str, str], dict[str, Group]]:
     return out
 
 
+_SERVER_NUMBER = re.compile(r"\s*#\d+$")
+
+
+def path_family(path: str) -> str:
+    """The VPN server family a path belongs to: its connection name without
+    a trailing server number, 'vpn:wg0 [ProtonVPN NL-FREE#244]' ->
+    'vpn:wg0 [ProtonVPN NL-FREE]'. Servers of one family are what a person
+    chooses between (a country, a plan); a single numbered server often
+    cannot be picked again, and each one alone gathers few minutes. Names
+    without a number, and direct paths, are their own family."""
+    if not path.startswith("vpn:"):
+        return path
+    head, sep, name = path.partition(" [")
+    if not sep or not name.endswith("]"):
+        return path
+    family = _SERVER_NUMBER.sub("", name[:-1])
+    return f"{head} [{family}]" if family and family != name[:-1] else path
+
+
+def merge_groups(groups: list[Group]) -> Group:
+    """One Group holding the data of several (paths of one family)."""
+    out = Group()
+    for g in groups:
+        out.stamps |= g.stamps
+        for k, v in g.coverage.items():
+            out.coverage[k] = max(out.coverage.get(k, 0.0), v)
+        out.seconds_with_data += g.seconds_with_data
+        out.rtts += g.rtts
+        out.connections |= g.connections
+        out.data_pkts += g.data_pkts
+        out.lost_gaps += g.lost_gaps
+        out.retrans += g.retrans
+        out.worst_minute_pct = max(out.worst_minute_pct, g.worst_minute_pct)
+        for k, m in g.minute_tcp.items():
+            out.minute_tcp.setdefault(k, MinuteAgg()).merge(m)
+        for k, m in g.minute_rtt.items():
+            out.minute_rtt.setdefault(k, RttMinute()).merge(m)
+    return out
+
+
+def by_family(paths: dict[str, Group]) -> dict[str, Group]:
+    """{path: Group} -> {family: Group}, each with `members` = its paths."""
+    fam: dict[str, list[str]] = defaultdict(list)
+    for p in paths:
+        fam[path_family(p)].append(p)
+    out = {}
+    for f, members in fam.items():
+        g = merge_groups([paths[p] for p in members])
+        g.members = set(members)
+        out[f] = g
+    return out
+
+
 def _n(v: float | None, fmt: str = "{:.1f}") -> str:
     return "-" if v is None else fmt.format(v)
 
@@ -412,10 +543,12 @@ def _n(v: float | None, fmt: str = "{:.1f}") -> str:
 def format_report(summary: dict) -> str:
     out = []
     groups = summary["groups"]
-    out.append("CONNECTIONS (program, remote port, path)")
+    out.append("CONNECTIONS (program, remote port, path; 'jumpy min' = minutes in which the ping jumped,")
+    out.append(f"RTT p95 >= {SPIKE_SPREAD_MS:.0f} ms or one second >= {SPIKE_MAX_MS:.0f} ms over the minute's median, "
+               f"of the minutes with >= {SPIKE_MIN_SECONDS} s of data)")
     header = (f"{'program':<20} {'port':>6}  {'path':<36} {'time':>7} {'conns':>5} "
               f"{'RTT p50':>8} {'RTT p95':>8} {'captured':>9} {'data pkts':>9} "
-              f"{'retrans':>7} {'loss %':>7} {'rtx/min':>7} {'gaps':>5} {'worst min %':>11}")
+              f"{'retrans':>7} {'loss %':>7} {'rtx/min':>7} {'gaps':>5} {'worst min %':>11} {'jumpy min':>9}")
     out.append(header)
     out.append("-" * len(header))
     for (program, port, path), g in sorted(groups.items()):
@@ -426,7 +559,8 @@ def format_report(summary: dict) -> str:
             f"{program[:20]:<20} {port:>6}  {path[:36]:<36} {g.seconds / 60:>6.1f}m {len(g.connections):>5} "
             f"{_n(percentile(g.rtts, .5)):>8} {_n(percentile(g.rtts, .95)):>8} "
             f"{minutes:>8.1f}m {g.data_pkts:>9} {g.retrans:>7} {_n(loss, '{:.2f}'):>7} "
-            f"{_n(per_min, '{:.2f}'):>7} {g.lost_gaps:>5} {g.worst_minute_pct:>11.1f}")
+            f"{_n(per_min, '{:.2f}'):>7} {g.lost_gaps:>5} {g.worst_minute_pct:>11.1f} "
+            f"{f'{g.spiky_minutes}/{g.ping_minutes}':>9}")
     if not groups:
         out.append("(no watched connections recorded)")
     out.append("")
@@ -456,9 +590,10 @@ def format_report(summary: dict) -> str:
     out.append("CALIBRATION (can ping on the direct path stand in for TCP loss?)")
     out.append("  " + summary["calibration"].describe())
     out.append("")
-    out.append("PROBES (ping; 'bound' = sent through that interface explicitly)")
+    out.append("PROBES (ping; 'bound' = sent through that interface explicitly;")
+    out.append(f"'jumps' = rounds whose slowest reply was >= {PROBE_SPIKE_MS:.0f} ms over the fastest)")
     header = (f"{'target':<18} {'role':<22} {'path':<36} {'bound':>5} {'rounds':>6} "
-              f"{'loss avg':>8} {'loss max':>8} {'RTT med':>8}  errors")
+              f"{'loss avg':>8} {'loss max':>8} {'RTT med':>8} {'jumps':>8}  errors")
     out.append(header)
     out.append("-" * len(header))
     for (target, role, path, bound), pg in sorted(summary["probes"].items()):
@@ -471,7 +606,7 @@ def format_report(summary: dict) -> str:
             f"{target:<18} {role[:22]:<22} {path[:36]:<36} {bound:>5} {pg.rounds:>6} "
             f"{_n(statistics.fmean(pg.losses) if pg.losses else None):>8} "
             f"{_n(max(pg.losses) if pg.losses else None):>8} "
-            f"{_n(statistics.median(pg.rtts) if pg.rtts else None):>8}  {err}")
+            f"{_n(statistics.median(pg.rtts) if pg.rtts else None):>8} {pg.jumpy_text():>8}  {err}")
     out.append("")
     out.append("ROUTE HOPS (ping per hop; loss that continues to the last hop is real,")
     out.append("loss at one hop only is that router limiting its replies)")

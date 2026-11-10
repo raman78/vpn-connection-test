@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from . import __version__, interfaces, probes, ss
 from .capture import CaptureManager, MinuteRow
 from .monitor import MONITOR_MAX_TARGETS, MonitorManager, MonitorMinute
-from .report import CAL_PING_BAD_PCT
+from .report import CAL_PING_BAD_PCT, PROBE_SPIKE_MS
 from .interfaces import NetPath, PathMap
 from .session import Session, iso
 from .tracker import Delta, Event, Selection, Tracker
@@ -53,6 +53,31 @@ class SecondPoint:
     is_vpn: bool
     rtt_ms: float | None
     d_data_segs_in: int
+    host: str = ""          # the connection's remote host and local port: per-connection
+    local_port: int = 0     # ping jumps are judged per connection (report.RttMinute)
+
+
+@dataclass
+class ProbePoint:
+    """One ping round of the probe thread, for the display."""
+    time: float
+    target: str
+    role: str
+    interface: str
+    path: str
+    sent: int
+    received: int
+    rtt_min: float | None
+    rtt_max: float | None
+    error: str
+
+    @property
+    def timed(self) -> bool:
+        return self.rtt_min is not None and self.rtt_max is not None
+
+    @property
+    def jumpy(self) -> bool:
+        return self.timed and self.rtt_max - self.rtt_min >= PROBE_SPIKE_MS
 
 
 @dataclass
@@ -136,6 +161,7 @@ class Engine:
         self._default_devs: set[str] = set()
         self._last_monitor: list[MonitorMinute] = []
         self._loss_trace_at: dict[str, float] = {}
+        self._endpoint_skipped: set[tuple] = set()
         self._last_routes: dict[tuple[str, str], RouteResult] = {}
         self.paths = PathMap([], {})
         self._nm_names: dict[str, str] = {}
@@ -214,7 +240,7 @@ class Engine:
         for d in deltas:
             self._write_sample(d)
             points.append(SecondPoint(d.time, d.program, d.key[3], d.path.label, d.path.is_vpn,
-                                      d.rtt_ms, d.d_data_segs_in))
+                                      d.rtt_ms, d.d_data_segs_in, d.key[2], d.key[1]))
         with self._lock:
             self._updates += points
         self.captures.update(wanted, now)
@@ -308,7 +334,8 @@ class Engine:
             # With a VPN up, also try the direct path to the same targets:
             # this is what the comparison needs, and if a kill switch blocks
             # it, the error says so in the log.
-            for direct in paths.direct_interfaces(interfaces.read_default_route_devices()):
+            directs = paths.direct_interfaces(interfaces.read_default_route_devices())
+            for direct in directs:
                 for target, role in targets:
                     jobs.append((target, role, direct.name))
             for v in vpns:
@@ -319,6 +346,20 @@ class Engine:
                     self._event(time.time(), "probe-skip",
                                 f"{v.name}: no gateway or DNS server known to NetworkManager; "
                                 f"tunnel's first hop not probed")
+                # The VPN server's public address, outside the tunnel: next to
+                # the far end through the tunnel, it tells whether ping jumps
+                # start on the route to the server or at the server itself.
+                conn = self._nm_names.get(v.name)
+                endpoint = interfaces.read_vpn_endpoint(conn) if conn else None
+                if endpoint:
+                    for direct in directs:
+                        jobs.append((endpoint, f"vpn-endpoint({v.name})", direct.name))
+                elif (v.name, conn) not in self._endpoint_skipped:
+                    self._endpoint_skipped.add((v.name, conn))
+                    self._event(time.time(), "probe-skip",
+                                f"{v.name} ({conn or 'no NetworkManager connection'}): the VPN server's "
+                                f"public address is not known (not a WireGuard connection in "
+                                f"NetworkManager); where its ping jumps start cannot be told")
         # Pings over one path one at a time (see probes.run_serial_per_path).
         now = time.time()
         pings = probes.run_serial_per_path(
@@ -327,6 +368,7 @@ class Engine:
         # Pings skipped because recording stopped are not results; leave them out.
         results = [(j, r) for j, r in zip(jobs, pings) if r is not None]
         rows = []
+        points = []
         for (target, role, bind), res in results:
             itf = bind or interfaces.route_interface(target)
             path = paths.path_for_interface(itf) if itf else NetPath("?", False, None)
@@ -338,10 +380,13 @@ class Engine:
             }
             self.session.write("probes.csv", row)
             rows.append(row)
+            points.append(ProbePoint(now, target, role, itf or "?", path.label, res.sent, res.received,
+                                     res.rtt_min, res.rtt_max, res.error or ""))
             if res.error:
                 self._event(time.time(), "probe-error", f"ping {target} via {itf or '?'}: {res.error}")
         with self._lock:
             self._last_probes = rows
+            self._updates += points
         if with_traces:
             for target, role in targets:
                 if self._stop.is_set():
@@ -490,8 +535,8 @@ class Engine:
         self.session.close()
 
     def drain_updates(self) -> list:
-        """New SecondPoints, MinutePoints and MonitorMinutes since the
-        previous call (single consumer)."""
+        """New SecondPoints, MinutePoints, MonitorMinutes, RouteResults and
+        ProbePoints since the previous call (single consumer)."""
         with self._lock:
             out, self._updates = self._updates, []
         return out

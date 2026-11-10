@@ -2,7 +2,7 @@ import json
 import unittest
 
 from vpnct.interfaces import (PathMap, parse_ip_addr, parse_nm_active,
-                              parse_nm_device_targets)
+                              parse_nm_device_targets, parse_wireguard_endpoint)
 from vpnct.probes import parse_ping, parse_tracepath
 from vpnct.procs import program_from_cmdline
 from vpnct.ss import parse_ss, split_endpoint
@@ -106,6 +106,16 @@ class InterfaceTests(unittest.TestCase):
         self.assertEqual(parse_nm_device_targets("192.0.2.1\n198.51.100.53 | 198.51.100.54\n"),
                          ["192.0.2.1", "198.51.100.53", "198.51.100.54"])
         self.assertEqual(parse_nm_device_targets("\n10.99.0.1\n"), ["10.99.0.1"])
+
+    def test_wireguard_endpoint(self):
+        # nmcli -g escapes ':' (shape recorded from a Proton VPN connection, 2026-11-10)
+        self.assertEqual(parse_wireguard_endpoint(
+            "5jCMG3U4pgJLotvxcXNGiRUuQ2RiVXhAAGVPo4JG5Tg= allowed-ips=0.0.0.0/0 "
+            "endpoint=198.51.100.139\\:443\n"), "198.51.100.139")
+        self.assertEqual(parse_wireguard_endpoint("K= allowed-ips=::/0 endpoint=[2001\\:db8\\:\\:1]\\:51820"),
+                         "2001:db8::1")
+        self.assertIsNone(parse_wireguard_endpoint("K= allowed-ips=0.0.0.0/0\n"))
+        self.assertIsNone(parse_wireguard_endpoint(""))
 
 
 PING_OK = """PING 198.51.100.1 (198.51.100.1) 56(84) bytes of data.
