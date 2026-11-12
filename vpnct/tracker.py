@@ -13,6 +13,10 @@ Which connections are watched (sampled into the log and captured for loss):
   received over the last minute, above a minimum rate.
 Connections to loopback and to private/LAN addresses are not watched; how
 many were skipped is reported, so a filtered connection is never invisible.
+When something is pinned, each skipped connection of a pinned program or
+port (loopback aside) is also a `skip` event, once, with the kind of
+address: a game server outside the public address space would otherwise
+vanish from the session without a trace.
 
 Which watched connections are *captured* (loss counted from packet headers):
 those that have lived at least CAPTURE_MIN_AGE_S and received at least
@@ -48,6 +52,25 @@ def is_internet(ip: str) -> bool:
     except ValueError:
         return False
     return addr.is_global
+
+
+def address_kind(ip: str) -> str:
+    """Why an address is not a public internet address, in words."""
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return "not an IP address"
+    if addr.is_loopback:
+        return "loopback"
+    if addr.is_link_local:
+        return "link-local"
+    if addr.version == 4 and addr in ipaddress.ip_network("100.64.0.0/10"):
+        return "shared address space (100.64.0.0/10, carrier-grade NAT)"
+    if addr.is_private:
+        return "private"
+    if addr.is_multicast:
+        return "multicast"
+    return "reserved, not public"
 
 
 @dataclass
@@ -122,6 +145,7 @@ class Tracker:
         self.names = names or ProgramNames()
         self.conns: dict[tuple, Tracked] = {}
         self.skipped_local = 0
+        self.skip_pinned: dict[tuple, bool] = {}   # skipped key -> pinned (reported once)
 
     def update(self, sockets: list[SocketStats], paths: PathMap,
                now: float | None = None) -> tuple[list[Delta], list[Event]]:
@@ -130,9 +154,14 @@ class Tracker:
         events: list[Event] = []
         seen = set()
         skipped = 0
+        skipped_keys = set()
         for s in sockets:
             if not is_internet(s.remote_ip):
                 skipped += 1
+                skipped_keys.add(s.key)
+                event = self._skip_event(now, s)
+                if event:
+                    events.append(event)
                 continue
             seen.add(s.key)
             path = paths.path_for(s.local_ip)
@@ -171,6 +200,7 @@ class Tracker:
                     d_ooopack=max(0, s.rcv_ooopack - prev.rcv_ooopack),
                 ))
         self.skipped_local = skipped
+        self.skip_pinned = {k: v for k, v in self.skip_pinned.items() if k in skipped_keys}
         for key in [k for k in self.conns if k not in seen]:
             tr = self.conns.pop(key)
             if tr.watched:
@@ -201,6 +231,20 @@ class Tracker:
                     t.watched = True
                     events.append(self._watch_event(now, t, "pinned"))
         return events
+
+    def _skip_event(self, now: float, s: SocketStats) -> Event | None:
+        """A `skip` event the first time a pinned program's or port's
+        connection is skipped for its address; None otherwise."""
+        if s.key in self.skip_pinned or self.selection.automatic:
+            return None
+        kind = address_kind(s.remote_ip)
+        program = self.names.name(s.pid, s.comm)
+        pinned = kind != "loopback" and self.selection.pins(program, s.remote_port)
+        self.skip_pinned[s.key] = pinned
+        if not pinned:
+            return None
+        return Event(now, "skip", f"{program} {_fmt_key(s.key)}: not watched, remote address is "
+                                  f"{kind}; only public internet addresses are measured")
 
     @staticmethod
     def _watch_event(now: float, t: Tracked, why: str) -> Event:

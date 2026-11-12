@@ -103,7 +103,14 @@ for `vpnct-gui` alone); the measuring is done by `ss`, `ip`,
    a connection stays watched until it closes, so its log has no holes.
    Connections to loopback and private/LAN addresses are not candidates;
    their number is kept (`skipped_local`) and shown, so they are not
-   silently gone.
+   silently gone. When something is pinned, a skipped connection of a
+   pinned program or port is also a `skip` event, once per connection, with
+   the kind of its address (`tracker.address_kind`: private, shared
+   address space 100.64.0.0/10, link-local, reserved); loopback is left
+   out. On 2026-11-12 a dungeon's game connection was missing from the
+   session for 13 minutes while Questlog, which captures any address on
+   TCP 13328, showed its fight; a count in the window was the only trace
+   such a skip would have left.
 5. **Write a sample row** for each watched connection.
 6. **Choose what is captured.** Of the watched connections, those that have
    lived at least `CAPTURE_MIN_AGE_S` (10 s) and received at least
@@ -338,7 +345,7 @@ Event kinds: `start`, `stop`, `watch`, `closed`, `path-change`,
 `counters-reset`, `interfaces`, `capture-start`, `capture-stop`,
 `capture-error`, `monitor-start`, `monitor-stop`, `monitor-error`,
 `watch-loss`, `route`, `probe-error`, `probe-skip`, `trace-error`, `mark`,
-`error`.
+`skip`, `error`.
 
 Addresses and names only; no packet content.
 
@@ -671,6 +678,7 @@ server).
 | high ping loss over a VPN path, no retransmissions in `losses.csv` for the same path | ICMP limited by the VPN server; trust the TCP numbers. Check that nothing else pings through the tunnel at the same time |
 | `trace-error ... interrupted by SIGINT` | the recorder was stopped with Ctrl+C while a trace ran (the signal reaches the whole process group) |
 | `probe-skip ... public address is not known` | the VPN is not a WireGuard connection in NetworkManager; the Tunnel line (§10) cannot say where jumps start, jumps are still counted |
+| `skip ... not watched, remote address is ...` | a pinned program talks to an address outside the public internet; it is not measured. If it is the program's main connection, the session misses it (§3) |
 | `counters-reset` | a socket was replaced between two samples on the same 4-tuple; rare, harmless |
 
 ## 12. Tests

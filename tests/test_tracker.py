@@ -62,6 +62,25 @@ class TrackerTests(unittest.TestCase):
         self.assertEqual(self.t.skipped_local, 2)
         self.assertEqual(len(self.t.conns), 1)
 
+    def test_skipped_pinned_connection_is_an_event_once(self):
+        socks = [sock(remote="100.70.1.2"),               # pinned program, shared space
+                 sock(remote="10.0.0.5", pid=2),           # other program: no event
+                 sock(remote="127.0.0.1", lport=40001)]    # loopback: no event
+        _, events = self.t.update(socks, PATHS, now=0)
+        self.assertEqual([e.kind for e in events], ["skip"])
+        self.assertIn("100.70.1.2:13328", events[0].text)
+        self.assertIn("shared address space", events[0].text)
+        _, events = self.t.update(socks, PATHS, now=1)
+        self.assertEqual(events, [])                         # once per connection
+        self.t.update([], PATHS, now=2)
+        _, events = self.t.update(socks, PATHS, now=3)       # a new connection on the same 4-tuple
+        self.assertEqual([e.kind for e in events], ["skip"])
+
+    def test_automatic_selection_reports_no_skips(self):
+        t = Tracker(Selection(), Names())
+        _, events = t.update([sock(remote="10.0.0.5")], PATHS, now=0)
+        self.assertEqual(events, [])
+
     def test_vanished_address_gets_gone_path(self):
         s = sock(local="10.99.0.2")
         self.t.update([s], PATHS, now=0)

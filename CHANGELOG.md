@@ -7,6 +7,10 @@ What changed for users, release by release. Technical details are in
 
 ### Added
 - The window's title shows the program's version.
+- When a watched program talks to an address outside the public internet
+  (for example a game server in a private or carrier-grade NAT range), the
+  event list says so for each such connection. Before, it was left out of
+  the measurement with only a count to show for it.
 
 ### Fixed
 - **★ Best** no longer goes to a VPN server tried only briefly just because
