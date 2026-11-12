@@ -811,9 +811,7 @@ class Window(QMainWindow):
         cards' all-time numbers; ping RTT is not comparable with TCP RTT."""
         cards = getattr(self, "_cards", [])
         direct = next((c for c in cards if not c.is_vpn and c.ping_ms is not None), None)
-        vpns = sorted((c for c in cards if c.is_vpn and c.enough),
-                      key=lambda c: (-(c.stability_pct or 0), advice._LEVEL_RANK[c.jumpy_level],
-                                     c.ping_ms or 1e9))
+        vpns = sorted((c for c in cards if c.is_vpn and c.enough), key=advice.card_rank)
         best = vpns[0] if vpns else None
         cost = (best.ping_ms - direct.ping_ms
                 if best and direct and best.ping_ms is not None else None)

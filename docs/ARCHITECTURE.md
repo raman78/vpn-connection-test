@@ -444,8 +444,13 @@ steadiest path as shaky. p95 minus median was 3 ms direct, 7–9 ms through
 the VPN servers.
 
 **★ Best** goes to one card, and only when at least two paths have
-`REC_MIN_SERVER_MINUTES` judged minutes: the highest stability; among
-equally stable paths the steadier ping (by level of jumpy minutes: under
+`REC_MIN_SERVER_MINUTES` judged minutes (`advice.card_rank`): the highest
+stability **level** (`STABLE_PCT` 99 %, `SHAKY_PCT` 95 % — the card's
+colours), not the exact value. The exact value put a VPN family with 0 bad
+minutes of 52 above the direct path with 2 of 1629 (99.9 %), although the
+direct path's ping was steadier and 11 ms lower, and the recommendation
+said to stay direct (measured 2026-11-12): 52 minutes cannot show a
+difference of 0.1 %. Among equally stable paths the steadier ping (by level of jumpy minutes: under
 `JUMPY_FAIR_PCT` 5 %, under `JUMPY_POOR_PCT` 20 %, or more — Steady ping
 95 % and over, 80 % and over, below), then the
 lowest ping (loss below the bad-minute threshold is not felt); loss only
@@ -650,7 +655,7 @@ The window receives every probe round as an `engine.ProbePoint` through
 | direct | 2+ minutes with loss | switch to the VPN, naming the best one so far |
 | direct | otherwise | stable (with the minutes the ping jumped, if any) |
 
-The RTT cost and the best VPN come from the cards (all sessions, the
+The RTT cost and the best VPN (`card_rank`) come from the cards (all sessions, the
 connection's own RTT on both paths): the monitor's ping RTT is not
 comparable with a TCP connection's RTT, which also counts delayed
 acknowledgements (measured: 17.5 ms ping against 32 ms TCP to the same

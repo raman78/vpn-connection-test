@@ -420,11 +420,25 @@ def path_title(path: str) -> tuple[str, str]:
     return "Direct", itf
 
 
+def card_rank(c: PathCard) -> tuple:
+    """Order of cards from best: stability level, then jumpy level, then the
+    lower ping, then less loss.
+
+    Stability is compared by level (STABLE_PCT, SHAKY_PCT), not by its exact
+    value: 2 bad minutes of 1629 (99.9 %) against none of 52 (100 %) is no
+    evidence that the second path loses less, yet the exact value ranked it
+    first, ahead of a steadier and 11 ms faster path (measured 2026-11-12).
+    Among equally stable paths the steadier, then the lower ping wins, since
+    loss below the bad-minute threshold is not felt; loss only breaks a tie."""
+    return (_LEVEL_RANK[c.stability_level], _LEVEL_RANK[c.jumpy_level],
+            c.ping_ms if c.ping_ms is not None else 1e9,
+            c.loss_pct if c.loss_pct is not None else 100)
+
+
 def path_cards(paths: dict[str, Group]) -> list[PathCard]:
     """Cards for a service's paths, direct first, one per VPN server family.
     `best` goes to one path only when at least two paths have enough judged
-    minutes to compare: fewest bad minutes, then the steadier ping (by
-    jumpy level), then lowest ping, then least loss."""
+    minutes to compare, ranked by `card_rank`."""
     cards = []
     for path, g in by_family(paths).items():
         if not (path.startswith("direct:") or path.startswith("vpn:")):
@@ -439,18 +453,13 @@ def path_cards(paths: dict[str, Group]) -> list[PathCard]:
             loss_pct(g), judged, len(g.judged_sessions), judged >= REC_MIN_SERVER_MINUTES,
             100.0 * g.spiky_minutes / g.ping_minutes if g.ping_minutes else None, g.ping_minutes,
             tuple(sorted(m.partition(" [")[2].rstrip("]") for m in g.members if m != path))))
-    # Stability decides; among equally stable paths the steadier ping, then the
-    # lower ping wins, since loss below the bad-minute threshold is not felt;
-    # loss only breaks a tie.
     rank = lambda c: _LEVEL_RANK[c.jumpy_level]
-    ranked = sorted((c for c in cards if c.enough),
-                    key=lambda c: (-(c.stability_pct or 0), rank(c),
-                                   c.ping_ms if c.ping_ms is not None else 1e9,
-                                   c.loss_pct if c.loss_pct is not None else 100))
+    ranked = sorted((c for c in cards if c.enough), key=card_rank)
     if len(ranked) >= 2:
         first, others = ranked[0], ranked[1:]
         first.best = True
-        equal = [o for o in others if (o.stability_pct or 0) >= (first.stability_pct or 0)]
+        stab = lambda c: _LEVEL_RANK[c.stability_level]
+        equal = [o for o in others if stab(o) <= stab(first)]
         if not equal:
             first.best_reason = "most stable"
         elif all(rank(first) < rank(o) for o in equal):

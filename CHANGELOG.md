@@ -8,6 +8,12 @@ What changed for users, release by release. Technical details are in
 ### Added
 - The window's title shows the program's version.
 
+### Fixed
+- **★ Best** no longer goes to a VPN server tried only briefly just because
+  it had no lost minute yet, while the direct path, recorded for hours, had
+  one or two. Paths with the same Stability colour count as equally stable,
+  and the steadier, faster ping decides.
+
 ## [0.2.0] — 2026-11-10
 
 ### Added

@@ -153,8 +153,11 @@ which servers a card includes; **Advanced** keeps each server apart.
 | **Stability** | the share of minutes in which no noticeable packet loss happened |
 | **Loss** | lost packets out of all packets received |
 
-**★ Best** goes to the most stable path. Among equally stable paths the
-one with the steadier ping wins (Steady ping green from 95 %, amber from
+**★ Best** goes to the most stable path, judged by the colour of its
+Stability (green from 99 %, amber from 95 %, red below), not by the exact
+figure: 2 lost minutes in 1600 and none in 50 are equally stable, because
+50 minutes are too few to show a difference that small. Among equally
+stable paths the one with the steadier ping wins (Steady ping green from 95 %, amber from
 80 %, red below), then the one with the lowest ping, because small loss
 below the noticeable level is not felt, while latency is felt all the
 time. The star appears only once at least two paths have enough data; a

@@ -412,6 +412,24 @@ class JumpyRankingTests(unittest.TestCase):
         self.assertTrue(c["VPN · B"].best)
         self.assertEqual(c["VPN · B"].best_reason, "as stable, steadier ping")
 
+    def test_stability_compared_by_level_not_exact_value(self):
+        # The 2026-11-12 case: a long direct record with one bad minute
+        # (99 %) against a short VPN record with none (100 %). Both are
+        # "good"; the steadier direct path must win, not the jumpier VPN.
+        from vpnct.report import by_service
+        vpn = "vpn:wg0 [X]"
+        losses = [loss(f"d{m}", 20 if m == 0 else 0) for m in range(100)]
+        losses += [loss(f"v{m}", 0, vpn, "wg0") for m in range(20)]
+        samples = self.samples("direct:eth0", 30, 0, 32.0)
+        samples += self.samples(vpn, 20, 6, 43.0, local="192.0.2.20:2")
+        s = self.summary(losses, samples)
+        c = {x.title: x for x in advice.path_cards(by_service(s["groups"])[("GAME.exe", "13328")])}
+        self.assertAlmostEqual(c["Direct"].stability_pct, 99.0)
+        self.assertEqual(c["VPN · X"].stability_pct, 100.0)
+        self.assertTrue(c["Direct"].best)
+        self.assertEqual(c["Direct"].best_reason, "as stable, steadier ping")
+        self.assertFalse(c["VPN · X"].best)
+
     def test_recommendation_ranks_families_and_names_jumps(self):
         a1, a2, b = "vpn:wg0 [A#1]", "vpn:wg0 [A#2]", "vpn:wg1 [B]"
         losses = [loss(f"d{m}", 0) for m in range(130)]
