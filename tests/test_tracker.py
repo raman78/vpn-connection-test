@@ -62,6 +62,24 @@ class TrackerTests(unittest.TestCase):
         self.assertEqual(self.t.skipped_local, 2)
         self.assertEqual(len(self.t.conns), 1)
 
+    def test_socket_listed_without_owner_is_watched_once_owner_shows(self):
+        # Observed 2026-11-12: a new game socket listed by ss with no process
+        # for about 2 s. Its name must not stay "?" for the connection's life.
+        bare = replace(sock(), pid=None, comm=None)
+        _, events = self.t.update([bare], PATHS, now=0)
+        self.assertEqual(events, [])
+        self.assertEqual(self.t.watched(), [])
+        _, events = self.t.update([sock()], PATHS, now=2)
+        self.assertEqual([e.kind for e in events], ["watch"])
+        self.assertIn("2s after first seen as '?'", events[0].text)
+        self.assertEqual(self.t.watched()[0].program, "GAME.exe")
+
+    def test_any_listed_owner_can_pin(self):
+        s = replace(sock(pid=2), owners=(("ThreadPoolSingl", 2), ("GameThread", 1), ("wineserver", 3)))
+        _, events = self.t.update([s], PATHS, now=0)
+        self.assertEqual([e.kind for e in events], ["watch"])
+        self.assertEqual(self.t.watched()[0].program, "GAME.exe")
+
     def test_skipped_pinned_connection_is_an_event_once(self):
         socks = [sock(remote="100.70.1.2"),               # pinned program, shared space
                  sock(remote="10.0.0.5", pid=2),           # other program: no event

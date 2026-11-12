@@ -13,6 +13,9 @@ What changed for users, release by release. Technical details are in
   the measurement with only a count to show for it.
 
 ### Fixed
+- A game connection could go unmeasured for its whole life when the
+  system listed it for a moment without its program, as happens at a switch
+  to a dungeon. The program is now looked up again until it is known.
 - **★ Best** no longer goes to a VPN server tried only briefly just because
   it had no lost minute yet, while the direct path, recorded for hours, had
   one or two. Paths with the same Stability colour count as equally stable,

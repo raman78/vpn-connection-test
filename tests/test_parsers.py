@@ -35,6 +35,13 @@ class SsTests(unittest.TestCase):
         self.assertEqual((a.rtt_ms, a.rttvar_ms, a.minrtt_ms), (31.654, 11.273, 16.233))
         self.assertEqual(a.data_segs_in, 21170)
 
+    def test_every_owner_is_kept(self):
+        line = ('0 0 192.0.2.20:40000 203.0.113.10:13328 users:(("ThreadPoolSingl",pid=7,fd=218),'
+                '("GameThread",pid=4242,fd=218),("wineserver",pid=99,fd=1922))\n\t rtt:30/5\n')
+        (s,) = parse_ss(line)
+        self.assertEqual(s.owners, (("ThreadPoolSingl", 7), ("GameThread", 4242), ("wineserver", 99)))
+        self.assertEqual((s.pid, s.comm), (7, "ThreadPoolSingl"))
+
     def test_missing_counters_are_zero(self):
         a = parse_ss(SS_OUTPUT)[0]
         self.assertEqual((a.retrans_total, a.rcv_ooopack), (0, 0))

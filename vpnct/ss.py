@@ -35,6 +35,10 @@ class SocketStats:
     bytes_sent: int
     segs_in: int
     data_segs_in: int
+    # Every process holding the socket, as listed: (comm, pid). Under Wine the
+    # game's thread and wineserver share it, and a new socket can be listed
+    # with no owner for a moment (observed 2026-11-12, about 2 s).
+    owners: tuple[tuple[str, int], ...] = ()
 
     @property
     def key(self) -> tuple[str, int, str, int]:
@@ -74,7 +78,8 @@ def parse_ss(output: str) -> list[SocketStats]:
         # Recv-Q Send-Q Local Peer [Process]
         local_ip, local_port = split_endpoint(fields[2])
         remote_ip, remote_port = split_endpoint(fields[3])
-        process = _PROCESS_RE.search(socket_line)
+        owners = tuple((c, int(p)) for c, p in _PROCESS_RE.findall(socket_line))
+        process = owners[0] if owners else None
         stats = dict(_STAT_RE.findall(info))
         rtt, rttvar = _rtt(stats.get("rtt"))
         minrtt = stats.get("minrtt")
@@ -82,8 +87,8 @@ def parse_ss(output: str) -> list[SocketStats]:
         result.append(SocketStats(
             local_ip=local_ip, local_port=local_port,
             remote_ip=remote_ip, remote_port=remote_port,
-            pid=int(process.group(2)) if process else None,
-            comm=process.group(1) if process else None,
+            pid=process[1] if process else None,
+            comm=process[0] if process else None,
             rtt_ms=rtt, rttvar_ms=rttvar,
             minrtt_ms=float(minrtt) if minrtt else None,
             retrans_total=int(retrans.partition("/")[2] or 0) if retrans else 0,
@@ -92,6 +97,7 @@ def parse_ss(output: str) -> list[SocketStats]:
             bytes_sent=_int(stats, "bytes_sent"),
             segs_in=_int(stats, "segs_in"),
             data_segs_in=_int(stats, "data_segs_in"),
+            owners=owners,
         ))
 
     for line in output.splitlines():

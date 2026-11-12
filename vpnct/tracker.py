@@ -99,6 +99,7 @@ class Tracked:
     history: deque = field(default_factory=deque)   # (time, data_segs_in)
     watched: bool = False
     captured: bool = False
+    first_program: str = ""      # the name when first seen ("?" while the socket had no owner)
 
     def rate(self, now: float) -> int:
         """Data segments received in the last AUTO_WINDOW_S."""
@@ -167,11 +168,18 @@ class Tracker:
             path = paths.path_for(s.local_ip)
             tr = self.conns.get(s.key)
             if tr is None:
-                program = self.names.name(s.pid, s.comm)
-                tr = Tracked(first=s, last=s, program=program, path=path, opened_at=now)
+                program = self._program(s)
+                tr = Tracked(first=s, last=s, program=program, path=path, opened_at=now,
+                             first_program=program)
                 tr.history.append((now, s.data_segs_in))
                 self.conns[s.key] = tr
                 continue
+            if not tr.watched:
+                # Owners are read again until the connection is watched: a new
+                # socket can be listed without its owner for a moment, and a
+                # name fixed at first sight left the game's connection to a
+                # dungeon unwatched for its whole life.
+                tr.program = self._program(s)
             prev = tr.last
             if (s.data_segs_in < prev.data_segs_in or s.bytes_received < prev.bytes_received
                     or s.retrans_total < prev.retrans_total):
@@ -209,7 +217,8 @@ class Tracker:
                                     f"{now - tr.opened_at:.0f}s, "
                                     f"{tr.last.data_segs_in - tr.first.data_segs_in} data segments in"))
         events += self._select(now)
-        self.names.forget_except({t.last.pid for t in self.conns.values() if t.last.pid})
+        self.names.forget_except({pid for t in self.conns.values()
+                                  for _, pid in (t.last.owners or ((t.last.comm, t.last.pid),)) if pid})
         return deltas, events
 
     def _select(self, now: float) -> list[Event]:
@@ -229,8 +238,23 @@ class Tracker:
             for t in self.conns.values():
                 if not t.watched and self.selection.pins(t.program, t.last.remote_port):
                     t.watched = True
-                    events.append(self._watch_event(now, t, "pinned"))
+                    why = "pinned"
+                    if t.program != t.first_program:
+                        why += (f", {now - t.opened_at:.0f}s after first seen as "
+                                f"'{t.first_program}' (owner not known yet then)")
+                    events.append(self._watch_event(now, t, why))
         return events
+
+    def _program(self, s: SocketStats) -> str:
+        """The program owning a socket. Every listed owner is considered, not
+        only the first: when one of them is pinned, that one names it."""
+        owners = s.owners or ((s.comm, s.pid),)
+        names = [self.names.name(pid, comm) for comm, pid in owners]
+        if not self.selection.automatic:
+            for n in names:
+                if self.selection.pins(n, s.remote_port):
+                    return n
+        return names[0]
 
     def _skip_event(self, now: float, s: SocketStats) -> Event | None:
         """A `skip` event the first time a pinned program's or port's
@@ -238,7 +262,7 @@ class Tracker:
         if s.key in self.skip_pinned or self.selection.automatic:
             return None
         kind = address_kind(s.remote_ip)
-        program = self.names.name(s.pid, s.comm)
+        program = self._program(s)
         pinned = kind != "loopback" and self.selection.pins(program, s.remote_port)
         self.skip_pinned[s.key] = pinned
         if not pinned:

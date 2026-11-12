@@ -97,7 +97,18 @@ for `vpnct-gui` alone); the measuring is done by `ss`, `ip`,
      silently — they are not what the session measures;
    - a watched connection that **closes**, with its lifetime and volume.
 4. **Choose what is watched.** Pinned (`--program`, `--port`): every
-   matching connection, case-insensitive on the program name. Automatic
+   matching connection, case-insensitive on the program name. The name
+   comes from the socket's owners as `ss` lists them (`SocketStats.owners`;
+   under Wine the game's thread and `wineserver` share the socket, and a
+   passing thread of another process may be listed first), and any one of
+   them that matches pins the connection (`Tracker._program`). Until a
+   connection is watched its owners are read again every second: on
+   2026-11-12 new game sockets were listed with no owner for up to about
+   2 s, and a name fixed at first sight ("?") would have left such a
+   connection unwatched for its whole life — the likely cause of a
+   dungeon's game connection missing from that afternoon's session. A
+   connection watched only after its owner appeared says so in its `watch`
+   event (`… after first seen as '?'`). Automatic
    (nothing pinned): up to `AUTO_MAX_WATCHED` connections that received at
    least `AUTO_MIN_SEGMENTS` data segments in the last minute; once watched,
    a connection stays watched until it closes, so its log has no holes.
