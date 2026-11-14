@@ -448,3 +448,49 @@ class JumpyRankingTests(unittest.TestCase):
         self.assertEqual([r.path for r in rec.ranking], ["vpn:wg1 [B]", "vpn:wg0 [A]"])
         self.assertEqual(rec.ranking[1].members, (a1, a2))
         self.assertIn("ping steady in 100 % of minutes", rec.headline)
+
+
+class StallTests(unittest.TestCase):
+    """Server stalls (capture.STALL_MIN_S pauses with the link answering):
+    shown beside loss, never deciding a switch."""
+
+    @staticmethod
+    def stalled(minute, n, longest=1.2, vpn=False):
+        from dataclasses import replace
+        return replace(mp(minute, 0, vpn=vpn), stalls=n, stall_s=n * longest, stall_max_s=longest)
+
+    def test_live_hint_names_stalls_without_changing_level(self):
+        rows = [self.stalled(0, 1), self.stalled(60, 0), self.stalled(120, 2, 7.5)]
+        h = advice.live_hint(rows, [], False, "unconfirmed")
+        self.assertEqual(h.level, "ok")
+        self.assertIn("stopped sending 3 times", h.text)
+        self.assertIn("7.5 s", h.text)
+
+    def test_one_stall_is_not_named(self):
+        h = advice.live_hint([mp(0, 0), mp(60, 0), self.stalled(120, 1)], [], False, "unconfirmed")
+        self.assertNotIn("stopped sending", h.text)
+
+    def test_recent_conclusion_says_server_side(self):
+        now = 100_000.0
+        rows = [self.stalled(now - 60 * (i + 1), 1 if i < 4 else 0) for i in range(20)]
+        v = advice.recent_view(rows, [], [], [], False, 3600, now)
+        self.assertEqual(v.conclusion.level, "stay")
+        self.assertIn("server's side", v.conclusion.text)
+        self.assertIn("server stalled 4×", v.lines[0].text)
+
+    def test_cards_count_stalls_and_old_rows_are_not_measured(self):
+        from vpnct.report import by_service
+        old = [loss(f"o{m}", 0) for m in range(20)]                    # no stall columns
+        new = [dict(loss(f"n{m}", 0, "vpn:wg0 [X]", "wg0"), stalls=1 if m < 5 else 0,
+                    stall_s=1.2 if m < 5 else 0, stall_max_s=1.2 if m < 5 else 0, silent=0)
+               for m in range(20)]
+        with tempfile.TemporaryDirectory() as tmp:
+            write_session(Path(tmp) / "a", {"losses.csv": old})
+            write_session(Path(tmp) / "b", {"losses.csv": new})
+            s = summarise([Path(tmp) / "a", Path(tmp) / "b"])
+        c = {x.title: x for x in advice.path_cards(by_service(s["groups"])[("GAME.exe", "13328")])}
+        self.assertIsNone(c["Direct"].stalls_per_hour)
+        self.assertEqual(c["Direct"].stall_level, "unknown")
+        self.assertAlmostEqual(c["VPN · X"].stalls_per_hour, 15.0)
+        self.assertEqual(c["VPN · X"].stall_level, "poor")
+        self.assertEqual(c["VPN · X"].stall_minutes, 20)

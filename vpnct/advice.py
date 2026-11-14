@@ -47,6 +47,13 @@ REC_OFTEN = 0.10                # direct bad at least this often: VPN always
 # direct path 1 %, Proton free servers 14-34 %)
 JUMPY_FAIR_PCT = 5.0            # under this: a steady ping
 JUMPY_POOR_PCT = 20.0           # at or above: a jumpy ping
+# Server stalls per measured hour (report.Group.stalls_per_hour). Normal
+# evenings to 2026-11-13 had about none (seconds without server data: 0-0.4
+# pauses of 2 s or more per hour); the evening of 2026-11-14, when many players
+# reported lag, had about 45 per hour.
+STALLS_FAIR_PER_H = 3.0         # under this: the server keeps its pace
+STALLS_POOR_PER_H = 15.0        # at or above: the server lags often
+STALL_HINT_MIN = 2              # stalls in the last RECENT_MINUTES that the live hint names
 
 
 def jumpy_level(pct: float | None) -> str:
@@ -89,6 +96,33 @@ def _tcp_minutes(minutes) -> list[tuple[float, bool, bool, float]]:
             for k, a in sorted(agg.items()) if a.judged]
 
 
+def stall_level(per_hour: float | None) -> str:
+    if per_hour is None:
+        return "unknown"
+    return ("good" if per_hour < STALLS_FAIR_PER_H else "fair" if per_hour < STALLS_POOR_PER_H
+            else "poor")
+
+
+def _stalls_recent(minutes, on_vpn: bool) -> tuple[int, float, int]:
+    """(stalls, longest s, minutes) over the last RECENT_MINUTES captured
+    minutes of the path in use."""
+    per: dict[float, list] = {}
+    for m in minutes:
+        if m.is_vpn == on_vpn:
+            a = per.setdefault(m.minute, [0, 0.0])
+            a[0] += m.stalls
+            a[1] = max(a[1], m.stall_max_s)
+    recent = [per[k] for k in sorted(per)][-RECENT_MINUTES:]
+    return sum(a[0] for a in recent), max((a[1] for a in recent), default=0.0), len(recent)
+
+
+def stall_text(n: int, longest: float, minutes: int) -> str:
+    return (f" The game server stopped sending {n} time{'s' if n != 1 else ''} in the last "
+            f"{minutes} min (longest {longest:.1f} s) while the connection kept answering: that lag "
+            f"comes from the server's side, not from packet loss on your route, so changing the "
+            f"path is unlikely to help.")
+
+
 def _watch_minutes(monitor) -> list[tuple[float, bool, float]]:
     """MonitorMinutes -> per minute: (minute, bad, worst loss %) over all
     watched servers and direct interfaces, full minutes only, oldest first."""
@@ -125,6 +159,9 @@ def live_hint(minutes, monitor, on_vpn: bool | None, calibration: str,
         where = "this VPN server's" if on_vpn else "the direct path's"
         hint.text += (f" The ping on {where} connection jumped in {jumpy} of the last "
                       f"{len(judged)} minutes.")
+    n, longest, mins = _stalls_recent(minutes, on_vpn)
+    if n >= STALL_HINT_MIN:
+        hint.text += stall_text(n, longest, mins)
     return hint
 
 
@@ -390,12 +427,19 @@ class PathCard:
     jumpy_pct: float | None = None   # minutes in which the ping jumped, of those with enough seconds
     ping_minutes: int = 0
     servers: tuple = ()    # the VPN servers this card stands for (a family)
+    stalls_per_hour: float | None = None   # server stalls per measured hour; None: not measured
+    stall_max_s: float = 0.0
+    stall_minutes: int = 0
     best: bool = False
     best_reason: str = ""
 
     @property
     def jumpy_level(self) -> str:
         return jumpy_level(self.jumpy_pct)
+
+    @property
+    def stall_level(self) -> str:
+        return stall_level(self.stalls_per_hour)
 
     @property
     def steady_pct(self) -> float | None:
@@ -452,7 +496,8 @@ def path_cards(paths: dict[str, Group]) -> list[PathCard]:
             100.0 * (judged - g.bad_minutes) / judged if judged else None,
             loss_pct(g), judged, len(g.judged_sessions), judged >= REC_MIN_SERVER_MINUTES,
             100.0 * g.spiky_minutes / g.ping_minutes if g.ping_minutes else None, g.ping_minutes,
-            tuple(sorted(m.partition(" [")[2].rstrip("]") for m in g.members if m != path))))
+            tuple(sorted(m.partition(" [")[2].rstrip("]") for m in g.members if m != path)),
+            g.stalls_per_hour, g.stall_max_s, g.stall_minutes))
     rank = lambda c: _LEVEL_RANK[c.jumpy_level]
     ranked = sorted((c for c in cards if c.enough), key=card_rank)
     if len(ranked) >= 2:
@@ -491,6 +536,28 @@ class RecentView:
 def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s: float,
                 now: float, rtt_cost_ms: float | None = None, best_vpn: str | None = None,
                 probes=()) -> RecentView:
+    """`_recent_view`, and when the game server stalled on the path in use at
+    least STALL_HINT_MIN times in the window, the conclusion says so: loss
+    and jumps say nothing about a server that stops sending."""
+    view = _recent_view(minutes, seconds, monitor, routes, on_vpn, window_s, now,
+                        rtt_cost_ms, best_vpn, probes)
+    if on_vpn is not None:
+        mine = [m for m in minutes if m.minute >= now - window_s and m.is_vpn == on_vpn]
+        n = sum(m.stalls for m in mine)
+        if n >= STALL_HINT_MIN:
+            longest = max(m.stall_max_s for m in mine)
+            view.conclusion.text += (f" The game server stopped sending {n} times in the last "
+                                     f"{_span_text(window_s)} (longest {longest:.1f} s) while the "
+                                     f"connection kept answering: lag on the server's side, not "
+                                     f"on your route.")
+            if view.conclusion.level == "ok":
+                view.conclusion.level = "stay"
+    return view
+
+
+def _recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s: float,
+                 now: float, rtt_cost_ms: float | None = None, best_vpn: str | None = None,
+                 probes=()) -> RecentView:
     """What each path did over the last `window_s` seconds of this session.
 
     `minutes`/`seconds`: the service's MinutePoints/SecondPoints; `monitor`:
@@ -509,7 +576,8 @@ def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s
         if m.minute >= t0:
             fam = path_family(m.path)
             agg.setdefault((m.minute, fam), MinuteAgg()).add(
-                (m.host, m.local_port), m.data_pkts, m.retrans, m.covered_s)
+                (m.host, m.local_port), m.data_pkts, m.retrans, m.covered_s,
+                m.stalls, m.stall_s, m.stall_max_s, m.silent)
             vpn_of[fam] = m.is_vpn
     rtts: dict[str, list[float]] = {}
     for s in seconds:
@@ -536,8 +604,14 @@ def recent_view(minutes, seconds, monitor, routes, on_vpn: bool | None, window_s
         lvl = "good" if bad == 0 else "fair" if bad == 1 else "poor"
         if bad == 0 and jm and jumpy_level(100.0 * sum(jm) / len(jm)) != "good":
             lvl = "fair"
+        stalls = sum(a.stalls for a in judged)
+        s_level = stall_level(60.0 * stalls / len(judged))
+        if s_level != "good" and _LEVEL_RANK[s_level] > _LEVEL_RANK[lvl]:
+            lvl = s_level
         lines.append(RecentLine(lvl, title, f"{len(judged)} min measured, packets lost in {bad}"
                                 + (f", ping jumped in {sum(jm)} of {len(jm)}" if jm else "")
+                                + (f", server stalled {stalls}× (longest "
+                                   f"{max(a.stall_max_s for a in judged):.1f} s)" if stalls else "")
                                 + (f", ping {rtt:.0f} ms" if rtt is not None else "")))
 
     # the direct path watched by ping (meaningful while the traffic is on a VPN)

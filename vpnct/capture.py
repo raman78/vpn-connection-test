@@ -20,6 +20,21 @@ Per watched connection and per minute, for data packets from the remote end:
 with zeros because nothing was lost is distinguishable from one the capture
 did not see.
 
+Stalls, per connection and minute: a pause of at least STALL_MIN_S between
+two data packets from the remote end, during which our side sent data.
+- stalls / stall_s / stall_max_s: such pauses in which the remote end still
+  answered (acknowledged our data). The connection was alive and the remote
+  program sent nothing: the server lagging, not the route losing. Measured
+  2026-11-14 on AION 2: the server normally sends every ~0.3 s; on a day many
+  players reported lag it paused for 0.6, 1.2, 2.4 and 7.5 s (whole ticks)
+  while acknowledging our packets within 17-58 ms, without a single
+  retransmission — invisible to loss, and to RTT, which the kernel updates
+  only when data arrives.
+- silent: such pauses in which nothing at all came back: the connection
+  itself went quiet.
+A pause is counted in the minute it ends in. A pause in which our side sent
+nothing either is not counted: nobody was talking.
+
 One pipeline per captured connection, its filter naming that connection
 exactly (both addresses and ports). Connections come and go independently:
 starting or ending one never restarts another, so the TCP analysis of a
@@ -38,6 +53,7 @@ from dataclasses import dataclass, field
 CAPTURE_SNAPLEN = 96
 FLUSH_DELAY_S = 2.0          # wait for late lines before closing a minute
 RETRY_AFTER_S = 10.0
+STALL_MIN_S = 1.0            # a pause in the remote end's data this long is a stall
 
 TSHARK_FIELDS = ["frame.time_epoch", "ip.src", "ipv6.src", "tcp.srcport",
                  "ip.dst", "ipv6.dst", "tcp.dstport", "tcp.len",
@@ -53,7 +69,10 @@ def bpf_filter(keys: frozenset[Key]) -> str:
 
 
 def tshark_command(source: str = "-") -> list[str]:
-    cmd = ["tshark", "-l", "-n", "-r", source, "-Y", "tcp.len>0",
+    # Every packet, not only those with data: the remote end's bare
+    # acknowledgements tell a server that stopped sending (stall) from a
+    # connection that went quiet (silent).
+    cmd = ["tshark", "-l", "-n", "-r", source,
            "-T", "fields", "-E", "separator=|"]
     for f in TSHARK_FIELDS:
         cmd += ["-e", f]
@@ -96,6 +115,18 @@ class MinuteRow:
     data_pkts: int
     lost_gaps: int
     retrans: int
+    stalls: int = 0
+    stall_s: float = 0.0
+    stall_max_s: float = 0.0
+    silent: int = 0
+
+
+@dataclass
+class _Pause:
+    """Since the remote end's last data packet."""
+    last_data: float | None = None
+    remote_seen: bool = False      # any packet from the remote end since
+    local_data: bool = False       # our side sent data since
 
 
 @dataclass
@@ -104,7 +135,8 @@ class Pipeline:
     keys: frozenset[Key]
     started: float
     stopped: float | None = None
-    counts: dict = field(default_factory=dict)       # (minute, key) -> [data, lost, retrans]
+    counts: dict = field(default_factory=dict)       # (minute, key) -> [data, lost, retrans, stalls, stall_s, stall_max_s, silent]
+    pauses: dict = field(default_factory=dict)       # key -> _Pause
     lock: threading.Lock = field(default_factory=threading.Lock)
     procs: list = field(default_factory=list)
     stderr_tail: list = field(default_factory=list)
@@ -116,13 +148,31 @@ class Pipeline:
     def add(self, p: PacketLine) -> None:
         key = (p.dst, p.dport, p.src, p.sport)       # packet from the remote end
         if key not in self.keys:
+            out = (p.src, p.sport, p.dst, p.dport)   # our packet
+            if out in self.keys and p.length > 0:
+                with self.lock:
+                    self.pauses.setdefault(out, _Pause()).local_data = True
             return
         minute = int(p.time // 60) * 60
         with self.lock:
-            c = self.counts.setdefault((minute, key), [0, 0, 0])
+            c = self.counts.setdefault((minute, key), [0, 0, 0, 0, 0.0, 0.0, 0])
+            pause = self.pauses.setdefault(key, _Pause())
+            if p.length == 0:
+                pause.remote_seen = True
+                return
             c[0] += 1
             c[1] += p.lost
             c[2] += p.retrans
+            if pause.last_data is not None and pause.local_data:
+                gap = p.time - pause.last_data
+                if gap >= STALL_MIN_S:
+                    if pause.remote_seen:
+                        c[3] += 1
+                        c[4] += gap
+                        c[5] = max(c[5], gap)
+                    else:
+                        c[6] += 1
+            pause.last_data, pause.remote_seen, pause.local_data = p.time, False, False
 
     def take_rows(self, now: float, final: bool = False) -> list[MinuteRow]:
         """Rows for every minute that has ended (or all, when final)."""
@@ -136,8 +186,9 @@ class Pipeline:
                 covered = max(0.0, min(minute + 60, end) - max(minute, self.started))
                 if covered > 0:
                     for key in sorted(self.keys):
-                        d, l, r = self.counts.pop((minute, key), (0, 0, 0))
-                        rows.append(MinuteRow(minute, self.interface, key, round(covered, 1), d, l, r))
+                        d, l, r, st, ss, sm, si = self.counts.pop((minute, key), (0, 0, 0, 0, 0.0, 0.0, 0))
+                        rows.append(MinuteRow(minute, self.interface, key, round(covered, 1), d, l, r,
+                                              st, round(ss, 2), round(sm, 2), si))
                 minute += 60
             self.flushed_until = minute
         return rows

@@ -6,6 +6,15 @@ What changed for users, release by release. Technical details are in
 ## [Unreleased]
 
 ### Added
+- **Server stalls**: the program now notices when the game server stops
+  sending for a second or more while the connection itself keeps
+  answering — the lag many players feel at once, which loses no packet and
+  so never showed in Stability, Loss or the ping. It is a number on every
+  card, red marks on the chart, and a line in **Recently** and the banner
+  saying the lag is on the server's side.
+- **History** view: the cards over all recordings, and the recommendation
+  with its reasoning. The **Overview** now shows only what happened since
+  the program started, so a bad evening is visible at a glance.
 - The window's title shows the program's version.
 - When a watched program talks to an address outside the public internet
   (for example a game server in a private or carrier-grade NAT range), the

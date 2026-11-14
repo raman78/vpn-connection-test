@@ -53,6 +53,29 @@ def stream_with_gap_and_retransmission() -> list[tuple[float, bytes, int]]:
     return pkts
 
 
+def stream_with_stall() -> list[tuple[float, bytes, int]]:
+    """Server sends data every 0.3 s, then pauses 2.4 s (1.2 s to 3.6 s) while the client keeps
+    sending data every 0.1 s and the server acknowledges each with a bare ACK
+    — the 2026-11-14 AION 2 pattern — then resumes."""
+    t0, pkts, sseq, cseq = 1_800_000_000.0, [], 1000, 1
+
+    def server_data(t):
+        nonlocal sseq
+        pkts.append((t, *_packet(SERVER, CLIENT, sseq, cseq, 100)))
+        sseq += 100
+
+    for i in range(5):
+        server_data(t0 + 0.3 * i)
+    t = t0 + 1.25
+    while t < t0 + 3.6:
+        pkts.append((t, *_packet(CLIENT, SERVER, cseq, sseq, 20)))
+        cseq += 20
+        pkts.append((t + 0.017, *_packet(SERVER, CLIENT, sseq, cseq, 0, flags=0x10)))
+        t += 0.1
+    server_data(t0 + 3.6)
+    return sorted(pkts)
+
+
 class ParseTests(unittest.TestCase):
     def test_line(self):
         line = "1800000000.25|203.0.113.10||13328|192.0.2.20||40000|100|1|\n"
@@ -80,6 +103,39 @@ class PipelineTests(unittest.TestCase):
     def _line(self, t, lost=False, retrans=False, sport=SERVER[1]):
         return parse_tshark_line(
             f"{t}|{SERVER[0]}||{sport}|{CLIENT[0]}||{CLIENT[1]}|100|{'1' if lost else ''}|{'1' if retrans else ''}")
+
+    def _ours(self, t, length=20):
+        return parse_tshark_line(f"{t}|{CLIENT[0]}||{CLIENT[1]}|{SERVER[0]}||{SERVER[1]}|{length}||")
+
+    def _ack(self, t):
+        return parse_tshark_line(f"{t}|{SERVER[0]}||{SERVER[1]}|{CLIENT[0]}||{CLIENT[1]}|0||")
+
+    def test_pause_with_acks_is_a_stall(self):
+        pipe = Pipeline("eth0", frozenset({KEY}), started=1020.0)
+        pipe.add(self._line(1030.0))
+        pipe.add(self._ours(1030.5))
+        pipe.add(self._ack(1030.52))
+        pipe.add(self._line(1032.5))                 # 2.5 s without data, link answered
+        pipe.add(self._line(1032.8))                 # 0.3 s: normal
+        (r,) = pipe.take_rows(now=1085.0)
+        self.assertEqual((r.data_pkts, r.stalls, r.stall_s, r.stall_max_s, r.silent), (3, 1, 2.5, 2.5, 0))
+
+    def test_pause_without_any_answer_is_silent(self):
+        pipe = Pipeline("eth0", frozenset({KEY}), started=1020.0)
+        pipe.add(self._line(1030.0))
+        pipe.add(self._ours(1030.5))
+        pipe.add(self._line(1034.0))
+        (r,) = pipe.take_rows(now=1085.0)
+        self.assertEqual((r.stalls, r.silent), (0, 1))
+
+    def test_pause_when_neither_side_talks_is_not_counted(self):
+        pipe = Pipeline("eth0", frozenset({KEY}), started=1020.0)
+        pipe.add(self._line(1030.0))
+        pipe.add(self._ours(1030.5, length=0))      # our bare ACK is not "talking"
+        pipe.add(self._ack(1031.0))
+        pipe.add(self._line(1040.0))
+        (r,) = pipe.take_rows(now=1085.0)
+        self.assertEqual((r.data_pkts, r.stalls, r.silent), (2, 0, 0))
 
     def test_counts_and_partial_coverage(self):
         pipe = Pipeline("eth0", frozenset({KEY}), started=1030.0)
@@ -129,6 +185,23 @@ class RealTsharkTests(unittest.TestCase):
         self.assertEqual(sum(p.lost for p in from_server), 1)
         self.assertEqual(sum(p.retrans for p in from_server), 1)
         self.assertEqual(len(TSHARK_FIELDS), len(out.splitlines()[0].split("|")))
+
+    def test_stall_is_found_through_the_shipped_command(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "s.pcap"
+            write_pcap(path, stream_with_stall())
+            out = subprocess.run(tshark_command(str(path)), capture_output=True, text=True,
+                                 check=True).stdout
+        pipe = Pipeline("eth0", frozenset({KEY}), started=1_799_999_990.0)
+        for x in out.splitlines():
+            p = parse_tshark_line(x)
+            if p:
+                pipe.add(p)
+        rows = [r for r in pipe.take_rows(now=1_800_000_200.0) if r.data_pkts]
+        self.assertEqual(sum(r.data_pkts for r in rows), 6)
+        self.assertEqual(sum(r.stalls for r in rows), 1)
+        self.assertAlmostEqual(max(r.stall_max_s for r in rows), 2.4, places=2)
+        self.assertEqual(sum(r.retrans + r.lost_gaps for r in rows), 0)
 
 
 @unittest.skipUnless(shutil.which("dumpcap"), "dumpcap not installed")

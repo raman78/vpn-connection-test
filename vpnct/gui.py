@@ -265,8 +265,8 @@ class Chart(QWidget):
             y = rtt_area.bottom() - frac * rtt_area.height()
             p.drawText(QRectF(0, y - 8, left - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                        f"{rtt_max * frac:.0f}")
-        p.drawText(QRectF(plot.left() + 4, rtt_area.top() + 2, 300, 16), Qt.AlignmentFlag.AlignLeft,
-                   "Ping [ms]")
+        p.drawText(QRectF(plot.left() + 4, rtt_area.top() + 2, 420, 16), Qt.AlignmentFlag.AlignLeft,
+                   "Ping [ms] · red marks: server stalls per minute")
         if pts:
             path = QPainterPath()
             for i, (t, v) in enumerate(pts):
@@ -302,6 +302,23 @@ class Chart(QWidget):
             p.setPen(Qt.PenStyle.NoPen)
             p.setBrush(colour)
             p.drawRoundedRect(rect, 1.5, 1.5)
+
+        # server stalls: a mark per minute at the top of the ping area, with
+        # the count, since a stall loses nothing and leaves no bar
+        stalls: dict[float, int] = defaultdict(int)
+        for m in mins:
+            stalls[m.minute] += m.stalls
+        for minute, n in stalls.items():
+            if not n:
+                continue
+            x0, x1 = x(max(minute, t0)), x(minute + 60)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(THEME["bad"]))
+            p.drawRoundedRect(QRectF(x0 + 1.5, rtt_area.top(), max(1.0, x1 - x0 - 3), 4), 1.5, 1.5)
+            if x1 - x0 >= 14:
+                p.setPen(QColor(THEME["bad"]))
+                p.drawText(QRectF(x0, rtt_area.top() + 5, x1 - x0, 14), Qt.AlignmentFlag.AlignCenter,
+                           str(n))
 
         # time axis and legend
         p.setPen(muted)
@@ -417,8 +434,11 @@ class PathCardWidget(QFrame):
             "Stability": "Share of measured minutes without packet loss (a minute is lost-free below "
                          f"{report.CAL_TCP_BAD_PCT} % retransmitted).",
             "Loss": "Packets the server had to send again, of all it sent.",
+            "Server stalls": "Pauses of a second or more in the game server's data while the connection "
+                             "kept answering, per hour measured. The server lagged; nothing was lost on "
+                             "the way, so Stability and Loss do not show it.",
         }
-        for i, name in enumerate(("Ping", "Spikes", "Steady ping", "Stability", "Loss")):
+        for i, name in enumerate(("Ping", "Spikes", "Steady ping", "Stability", "Loss", "Server stalls")):
             cap = label(name, "muted")
             cap.setToolTip(tips[name])
             val = label("–", "big")
@@ -448,6 +468,12 @@ class PathCardWidget(QFrame):
         loss_level = ("unknown" if c.loss_pct is None else "good" if c.loss_pct < 0.1
                       else "fair" if c.loss_pct < report.CAL_TCP_BAD_PCT else "poor")
         self.values["Loss"].setStyleSheet(f"color: {LEVEL_COLOURS[loss_level]}")
+        self.values["Server stalls"].setText(ms(c.stalls_per_hour, "{:.0f} / h"))
+        self.values["Server stalls"].setStyleSheet(f"color: {LEVEL_COLOURS[c.stall_level]}")
+        self.values["Server stalls"].setToolTip(
+            (f"Longest {c.stall_max_s:.1f} s, over {c.stall_minutes} measured minutes. "
+             if c.stall_minutes else "Not measured: recorded before stalls were counted. ")
+            + "Pauses of a second or more in the game server's data while the connection kept answering.")
         sessions = f" · {c.sessions} session{'s' if c.sessions != 1 else ''}"
         if c.enough:
             self.footer.setText(f"{c.judged_minutes} min measured{sessions}")
@@ -468,6 +494,39 @@ class PathCardWidget(QFrame):
         restyle(self)
 
 
+class CardRow(QScrollArea):
+    """A row of PathCardWidgets that scrolls sideways."""
+
+    def __init__(self, empty_text: str) -> None:
+        super().__init__()
+        self.box = QWidget()
+        self.lay = QHBoxLayout(self.box)
+        self.lay.setContentsMargins(0, 0, 0, 0)
+        self.lay.setSpacing(12)
+        self.widgets: list[PathCardWidget] = []
+        self.empty = label(empty_text, "muted", wrap=True)
+        self.lay.addWidget(self.empty)
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setWidget(self.box)
+
+    def show_cards(self, cards: list, now_path: str | None) -> None:
+        while len(self.widgets) < len(cards):
+            wdg = PathCardWidget()
+            self.widgets.append(wdg)
+            self.lay.addWidget(wdg)
+        for wdg, c in zip(self.widgets, cards):
+            wdg.show_card(c, now_path is not None and c.path == report.path_family(now_path))
+            wdg.show()
+        for wdg in self.widgets[len(cards):]:
+            wdg.hide()
+        self.empty.setVisible(not cards)
+        # The row is as tall as a card, plus room for a horizontal scroll bar.
+        bar = self.horizontalScrollBar().sizeHint().height()
+        self.setFixedHeight(self.box.sizeHint().height() + bar + 4)
+
+
 class Window(QMainWindow):
     METRICS = [
         ("time observed", lambda g: f"{g.seconds / 60:.1f} min"),
@@ -484,6 +543,8 @@ class Window(QMainWindow):
         ("loss gaps", lambda g: f"{g.lost_gaps}"),
         ("worst minute", lambda g: f"{g.worst_minute_pct:.1f} %"),
         ("jumpy minutes", lambda g: f"{g.spiky_minutes} of {g.ping_minutes}"),
+        ("server stalls", lambda g: (f"{g.stalls} in {g.stall_minutes} min, longest {g.stall_max_s:.1f} s"
+                                     if g.stall_minutes else "not measured")),
     ]
     BANNER = {  # level -> (background, accent, title)
         "switch": (THEME["bad_bg"], THEME["bad"], "Losing packets — switch to the VPN"),
@@ -492,6 +553,8 @@ class Window(QMainWindow):
         "ok": (THEME["good_bg"], THEME["good"], "Connection is stable"),
         "unknown": (THEME["idle_bg"], THEME["idle"], "Waiting for data"),
     }
+
+    VIEW_OVERVIEW, VIEW_ADVANCED, VIEW_HISTORY = 0, 1, 2
 
     def __init__(self, engine: Engine, store: Store, cfg_note: str) -> None:
         super().__init__()
@@ -521,15 +584,23 @@ class Window(QMainWindow):
         self.mark_btn.setToolTip("Note this moment and probe the route at once")
         self.mark_btn.clicked.connect(lambda: self.engine.mark("marked in the window"))
         head.addWidget(self.mark_btn)
-        self.adv_btn = QPushButton("Advanced")
-        self.adv_btn.setCheckable(True)
-        self.adv_btn.toggled.connect(lambda on: self.stack.setCurrentIndex(1 if on else 0))
-        head.addWidget(self.adv_btn)
+        # Views: Overview (since the program started), History (all
+        # recordings), Advanced. Stack indexes follow VIEW_*.
+        self.view_group = QButtonGroup(self)
+        for i, name in ((self.VIEW_OVERVIEW, "Overview"), (self.VIEW_HISTORY, "History"),
+                        (self.VIEW_ADVANCED, "Advanced")):
+            b = QPushButton(name)
+            b.setCheckable(True)
+            b.setChecked(i == self.VIEW_OVERVIEW)
+            self.view_group.addButton(b, i)
+            head.addWidget(b)
+        self.view_group.idToggled.connect(lambda i, on: on and self.stack.setCurrentIndex(i))
         root.addLayout(head)
 
         self.stack = QStackedWidget()
         self.stack.addWidget(self._build_overview(cfg_note))
         self.stack.addWidget(self._build_advanced(cfg_note))
+        self.stack.addWidget(self._build_history())
         root.addWidget(self.stack, 1)
         self.setCentralWidget(page)
 
@@ -585,33 +656,12 @@ class Window(QMainWindow):
 
         row = QHBoxLayout()
         row.addWidget(label("Tested paths", "h2"))
+        row.addWidget(label("since the program started · all recordings under History", "muted"))
         row.addStretch(1)
-        self.scope_session = QPushButton("This session")
-        self.scope_all = QPushButton("All sessions")
-        self.scope = QButtonGroup(self)
-        for b in (self.scope_session, self.scope_all):
-            b.setCheckable(True)
-            self.scope.addButton(b)
-            row.addWidget(b)
-        self.scope_all.setChecked(True)
-        self.scope.buttonToggled.connect(lambda *_: self.refresh_cards())
         lay.addLayout(row)
-
-        self.cards_box = QWidget()
-        self.cards_lay = QHBoxLayout(self.cards_box)
-        self.cards_lay.setContentsMargins(0, 0, 0, 0)
-        self.cards_lay.setSpacing(12)
-        self.cards: list[PathCardWidget] = []
-        self.cards_empty = label("No path measured for this connection yet — keep the program "
-                                 "running while you play.", "muted", wrap=True)
-        self.cards_lay.addWidget(self.cards_empty)
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        scroll.setWidget(self.cards_box)
-        self.cards_scroll = scroll
-        lay.addWidget(scroll)
+        self.session_cards = CardRow("No path measured for this connection since the program "
+                                     "started — keep it running while you play.")
+        lay.addWidget(self.session_cards)
 
         chart_card, cl = card()
         ch = QHBoxLayout()
@@ -642,6 +692,34 @@ class Window(QMainWindow):
         self.rec_sub = label("", "muted", wrap=True)
         rl.addWidget(self.rec_sub)
         lay.addWidget(rec_card)
+        return w
+
+    # ---- history ------------------------------------------------------------
+
+    def _build_history(self) -> QWidget:
+        w = QWidget()
+        w.setObjectName("page")
+        lay = QVBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(12)
+        row = QHBoxLayout()
+        row.addWidget(label("Tested paths", "h2"))
+        row.addWidget(label("all recordings together", "muted"))
+        row.addStretch(1)
+        lay.addLayout(row)
+        self.all_cards = CardRow("No path measured for this connection in any recording yet.")
+        lay.addWidget(self.all_cards)
+        rec_card, rl = card()
+        rl.addWidget(label("Recommendation", "h2"))
+        self.hist_rec_headline = label("Calculating…", wrap=True)
+        self.hist_rec_headline.setStyleSheet("font-size: 12pt; font-weight: 600;")
+        rl.addWidget(self.hist_rec_headline)
+        self.hist_rec_body = label("", wrap=True)
+        self.hist_rec_body.setTextFormat(Qt.TextFormat.RichText)
+        self.hist_rec_body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        rl.addWidget(self.hist_rec_body)
+        lay.addWidget(rec_card)
+        lay.addStretch(1)
         return w
 
     # ---- advanced -----------------------------------------------------------
@@ -817,28 +895,19 @@ class Window(QMainWindow):
                 if best and direct and best.ping_ms is not None else None)
         return cost, best.title if best else None
 
-    def refresh_cards(self) -> None:
+    def cards_for(self, summary) -> list:
         key = self.current_service()
-        summary = self.all_summary if self.scope_all.isChecked() else self.summary
-        cards = []
-        if key is not None and isinstance(summary, dict):
-            paths = report.by_service(summary["groups"]).get((key[0], str(key[1])), {})
-            cards = advice.path_cards(paths)
-        self._cards = cards
-        while len(self.cards) < len(cards):
-            wdg = PathCardWidget()
-            self.cards.append(wdg)
-            self.cards_lay.addWidget(wdg)
+        if key is None or not isinstance(summary, dict):
+            return []
+        return advice.path_cards(report.by_service(summary["groups"]).get((key[0], str(key[1])), {}))
+
+    def refresh_cards(self) -> None:
+        """Overview: this session's cards; History: all recordings'. The RTT
+        cost and best VPN for Recently come from all recordings (`_cards`)."""
         now_path = getattr(self, "_now_path", None)
-        for wdg, c in zip(self.cards, cards):
-            wdg.show_card(c, now_path is not None and c.path == report.path_family(now_path))
-            wdg.show()
-        for wdg in self.cards[len(cards):]:
-            wdg.hide()
-        self.cards_empty.setVisible(not cards)
-        # The row is as tall as a card, plus room for a horizontal scroll bar.
-        bar = self.cards_scroll.horizontalScrollBar().sizeHint().height()
-        self.cards_scroll.setFixedHeight(self.cards_box.sizeHint().height() + bar + 4)
+        self.session_cards.show_cards(self.cards_for(self.summary), now_path)
+        self._cards = self.cards_for(self.all_summary)
+        self.all_cards.show_cards(self._cards, now_path)
 
     def refresh_status(self, snap) -> None:
         up = time.time() - snap.started
@@ -917,6 +986,8 @@ class Window(QMainWindow):
             self.recommendation.setText(f"recommendation failed: {summary!r}")
             self.rec_headline.setText("Recommendation could not be calculated")
             self.rec_sub.setText(repr(summary))
+            self.hist_rec_headline.setText("Recommendation could not be calculated")
+            self.hist_rec_body.setText(repr(summary))
             return
         main, _rest = advice.main_services(summary)
         services = [k for k in main if key is None or k == (key[0], str(key[1]))] or main
@@ -925,20 +996,24 @@ class Window(QMainWindow):
             self.rec_headline.setText("Not enough data yet")
             self.rec_sub.setText(f"A connection needs {advice.REC_MIN_SERVER_MINUTES} measured "
                                  f"minutes before it can be compared.")
+            self.hist_rec_headline.setText("Not enough data yet")
+            self.hist_rec_body.setText(self.rec_sub.text())
             return
         rec = advice.recommend(summary, services[0])
         body = "<br>".join("· " + d for d in rec.details)
         self.recommendation.setText(f"<b>{services[0][0]} :{services[0][1]} — {rec.headline}</b><br>{body}")
         self.rec_headline.setText(rec.headline)
+        self.hist_rec_headline.setText(rec.headline)
+        self.hist_rec_body.setText(body)
         if rec.ranking:
             best = rec.ranking[0]
             name, _itf = advice.path_title(best.path)
             rtt = f", ping {best.rtt_p50:.0f} ms" if best.rtt_p50 is not None else ""
             jumpy = f", ping steady in {best.steady_pct:.0f} % of minutes" if best.steady_pct is not None else ""
             self.rec_sub.setText(f"Best VPN measured so far: {name} — {100 - 100 * best.bad_fraction:.0f} % "
-                                 f"stable{rtt}{jumpy}, {best.minutes} min. Full reasoning under Advanced.")
+                                 f"stable{rtt}{jumpy}, {best.minutes} min. Full reasoning under History.")
         else:
-            self.rec_sub.setText("Full reasoning under Advanced.")
+            self.rec_sub.setText("Full reasoning under History.")
 
     def pick_sessions(self) -> None:
         dlg = SessionPicker(self, self.engine.session.dir.name, self.extra_sessions)
@@ -1056,7 +1131,7 @@ class App:
             self.window.refresh_overview(snap, h)
             self.tick_view()
             self.window.refresh_chart()
-            if self.window.stack.currentIndex() == 1:
+            if self.window.stack.currentIndex() == Window.VIEW_ADVANCED:
                 self.window.refresh_status(snap)
                 self.window.refresh_probes(snap)
                 self.window.refresh_events(snap)

@@ -14,6 +14,10 @@ Numbers and where they come from:
   (`losses.csv`), and per minute of capture; gaps alongside;
 - jumpy minutes: minutes in which a connection's per-second RTT jumped
   against the minute's own median (`spiky`);
+- server stalls: pauses in the remote end's data while the connection kept
+  answering (`losses.csv` columns stalls..silent, capture.STALL_MIN_S);
+  sessions recorded before these columns existed count as not measured,
+  never as stall-free;
 - probes and hops: ping results per target and path (`probes.csv`,
   `hops.csv`);
 - direct-path monitor (`monitor.csv`): per target and minute, ping loss on
@@ -67,23 +71,48 @@ class MinuteAgg:
     pipeline; those rows do not overlap, so a connection's coverage is their
     sum. The minute is as well covered as its least covered connection."""
 
-    __slots__ = ("data", "retrans", "_cover")
+    __slots__ = ("data", "retrans", "_cover", "stalls", "stall_s", "stall_max_s", "silent",
+                 "_unmeasured")
 
     def __init__(self) -> None:
         self.data = 0
         self.retrans = 0
         self._cover: dict = {}
+        self.stalls = 0
+        self.stall_s = 0.0
+        self.stall_max_s = 0.0
+        self.silent = 0
+        self._unmeasured = False     # a row without stall columns (recorded before they existed)
 
-    def add(self, connection, data: int, retrans: int, covered_s: float) -> None:
+    def add(self, connection, data: int, retrans: int, covered_s: float,
+            stalls: int | None = None, stall_s: float = 0.0, stall_max_s: float = 0.0,
+            silent: int = 0) -> None:
         self.data += data
         self.retrans += retrans
         self._cover[connection] = self._cover.get(connection, 0.0) + covered_s
+        if stalls is None:
+            self._unmeasured = True
+        else:
+            self.stalls += stalls
+            self.stall_s += stall_s
+            self.stall_max_s = max(self.stall_max_s, stall_max_s)
+            self.silent += silent
 
     def merge(self, other: "MinuteAgg") -> None:
         self.data += other.data
         self.retrans += other.retrans
         for c, v in other._cover.items():
             self._cover[c] = self._cover.get(c, 0.0) + v
+        self.stalls += other.stalls
+        self.stall_s += other.stall_s
+        self.stall_max_s = max(self.stall_max_s, other.stall_max_s)
+        self.silent += other.silent
+        self._unmeasured |= other._unmeasured
+
+    @property
+    def stall_judged(self) -> bool:
+        """Judged, and recorded with stall counting."""
+        return self.judged and not self._unmeasured
 
     @property
     def cover(self) -> float:
@@ -176,6 +205,32 @@ class Group:
     @property
     def bad_minutes(self) -> int:
         return sum(m.bad for m in self.minute_tcp.values())
+
+    @property
+    def stall_minutes(self) -> int:
+        """Judged minutes recorded with stall counting."""
+        return sum(m.stall_judged for m in self.minute_tcp.values())
+
+    @property
+    def stalls(self) -> int:
+        return sum(m.stalls for m in self.minute_tcp.values() if m.stall_judged)
+
+    @property
+    def stalled_minutes(self) -> int:
+        return sum(m.stall_judged and m.stalls > 0 for m in self.minute_tcp.values())
+
+    @property
+    def stall_max_s(self) -> float:
+        return max((m.stall_max_s for m in self.minute_tcp.values() if m.stall_judged), default=0.0)
+
+    @property
+    def silent(self) -> int:
+        return sum(m.silent for m in self.minute_tcp.values() if m.stall_judged)
+
+    @property
+    def stalls_per_hour(self) -> float | None:
+        n = self.stall_minutes
+        return 60.0 * self.stalls / n if n else None
 
     @property
     def judged_sessions(self) -> set[str]:
@@ -317,6 +372,15 @@ def route_verdict_for(routes: list[tuple[float, str, str, str]], target: str, in
     return None
 
 
+def _stall_columns(r: dict) -> tuple:
+    """(stalls, stall_s, stall_max_s, silent) of a losses row; stalls None
+    when the row was written before stalls were counted."""
+    if r.get("stalls") in (None, ""):
+        return (None, 0.0, 0.0, 0)
+    return (int(r["stalls"]), float(r["stall_s"] or 0), float(r["stall_max_s"] or 0),
+            int(r["silent"] or 0))
+
+
 def _host(endpoint: str) -> str:
     return endpoint.rpartition(":")[0].strip("[]")
 
@@ -394,7 +458,7 @@ def summarise(session_dirs: list[Path]) -> dict:
             if data >= 50:
                 g.worst_minute_pct = max(g.worst_minute_pct, 100.0 * rtx / data)
             g.minute_tcp.setdefault((d.name, r["minute"]), MinuteAgg()).add(
-                r["local"], data, rtx, float(r["covered_s"]))
+                r["local"], data, rtx, float(r["covered_s"]), *_stall_columns(r))
             g.connections.add((d.name, r["local"], r["remote"]))
         for r in _read(d / "probes.csv"):
             key = (r["target"], r["role"], r["path"], r["bound"])
@@ -545,10 +609,13 @@ def format_report(summary: dict) -> str:
     groups = summary["groups"]
     out.append("CONNECTIONS (program, remote port, path; 'jumpy min' = minutes in which the ping jumped,")
     out.append(f"RTT p95 >= {SPIKE_SPREAD_MS:.0f} ms or one second >= {SPIKE_MAX_MS:.0f} ms over the minute's median, "
-               f"of the minutes with >= {SPIKE_MIN_SECONDS} s of data)")
+               f"of the minutes with >= {SPIKE_MIN_SECONDS} s of data;")
+    out.append("'stalls/h' = pauses of 1 s or more in the server's data while the connection kept answering, "
+               "per hour measured; '-' = not measured)")
     header = (f"{'program':<20} {'port':>6}  {'path':<36} {'time':>7} {'conns':>5} "
               f"{'RTT p50':>8} {'RTT p95':>8} {'captured':>9} {'data pkts':>9} "
-              f"{'retrans':>7} {'loss %':>7} {'rtx/min':>7} {'gaps':>5} {'worst min %':>11} {'jumpy min':>9}")
+              f"{'retrans':>7} {'loss %':>7} {'rtx/min':>7} {'gaps':>5} {'worst min %':>11} {'jumpy min':>9} "
+              f"{'stalls/h':>8} {'longest':>7}")
     out.append(header)
     out.append("-" * len(header))
     for (program, port, path), g in sorted(groups.items()):
@@ -560,7 +627,8 @@ def format_report(summary: dict) -> str:
             f"{_n(percentile(g.rtts, .5)):>8} {_n(percentile(g.rtts, .95)):>8} "
             f"{minutes:>8.1f}m {g.data_pkts:>9} {g.retrans:>7} {_n(loss, '{:.2f}'):>7} "
             f"{_n(per_min, '{:.2f}'):>7} {g.lost_gaps:>5} {g.worst_minute_pct:>11.1f} "
-            f"{f'{g.spiky_minutes}/{g.ping_minutes}':>9}")
+            f"{f'{g.spiky_minutes}/{g.ping_minutes}':>9} "
+            f"{_n(g.stalls_per_hour):>8} {(f'{g.stall_max_s:.1f}s' if g.stall_minutes else '-'):>7}")
     if not groups:
         out.append("(no watched connections recorded)")
     out.append("")

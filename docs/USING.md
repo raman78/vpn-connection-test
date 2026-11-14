@@ -67,7 +67,7 @@ desktop notification says so, once per change.
 
 ```
 ┌─ VPN connection test 0.2.0 ──────────────────────────────────────┐
-│ AION2.exe :13328                     [It stutters now] [Advanced]│
+│ AION2.exe :13328  [It stutters now] [Overview][History][Advanced]│
 ├──────────────────────────────────────────────────────────────────┤
 │ Direct path is losing packets — switch to the VPN at the next    │
 │ safe moment.              Now on: direct:eth0   ping 32 ms       │
@@ -77,23 +77,33 @@ desktop notification says so, once per change.
 │  The direct path lost packets in 3 of 40 minutes — switch to the │
 │  VPN (VPN · NO).                                                 │
 ├──────────────────────────────────────────────────────────────────┤
-│ Tested paths                        [This session] [All sessions]│
+│ Tested paths   since the program started                         │
 │ ┌ Direct ──────────┐ ┌ VPN · NO ★ Best ──┐ ┌ VPN · NL ────────┐  │
 │ │ Ping     32 ms   │ │ Ping     43 ms    │ │ Ping     45 ms   │  │
 │ │ Spikes   3 ms    │ │ Spikes   7 ms     │ │ Spikes   9 ms    │  │
 │ │ Steady ping 99 % │ │ Steady ping 92 %  │ │ Steady ping 71 % │  │
 │ │ Stability 90 %   │ │ Stability 100 %   │ │ Stability 100 %  │  │
 │ │ Loss     0.40 %  │ │ Loss     0.00 %   │ │ Loss     0.01 %  │  │
+│ │ Server stalls 0/h│ │ Server stalls 1/h │ │ Server stalls –  │  │
 │ └──────────────────┘ └───────────────────┘ └──────────────────┘  │
 ├──────────────────────────────────────────────────────────────────┤
-│ [ chart: ping and lost packets, path in use shaded behind it ]   │
+│ [ chart: ping, server stalls, lost packets; path in use behind ]│
 ├──────────────────────────────────────────────────────────────────┤
 │ Use the VPN only when the direct path is losing: …               │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 The window's title bar shows the program's version, the one to give when
-reporting a problem. The window opens on the **overview** for one
+reporting a problem. It has three views, switched at the top right:
+
+- **Overview** — what happened since you started the program: the
+  banner, Recently, the cards, the chart, and the recommendation's
+  headline;
+- **History** — all your recordings together: the same cards over every
+  session, and the recommendation with its full reasoning;
+- **Advanced** — the numbers behind both (below).
+
+The window opens on the **overview** for one
 connection. When several
 programs are watched, it picks the busiest one with enough data; the
 drop-down list at the top switches between them.
@@ -136,6 +146,11 @@ Typical conclusions:
 When the VPN's ping jumped in two minutes or more, the conclusion adds how
 often, for example "Its ping jumped in 7 of 15 minutes."
 
+When the game server stalled twice or more in the chosen span (see
+**Server stalls** below), the conclusion says so too: the lag came from
+the server's side, not from your route. The banner says the same about the
+last three minutes.
+
 ### The cards
 
 One card per path you have used: your normal connection, and each VPN
@@ -152,6 +167,7 @@ which servers a card includes; **Advanced** keeps each server apart.
 | **Steady ping** | the share of minutes in which the ping did not jump; like Stability, more is better |
 | **Stability** | the share of minutes in which no noticeable packet loss happened |
 | **Loss** | lost packets out of all packets received |
+| **Server stalls** | how often per hour the game server stopped sending for a second or more while the connection itself kept answering; "–" for recordings made before stalls were counted |
 
 **★ Best** goes to the most stable path, judged by the colour of its
 Stability (green from 99 %, amber from 95 %, red below), not by the exact
@@ -163,8 +179,26 @@ below the noticeable level is not felt, while latency is felt all the
 time. The star appears only once at least two paths have enough data; a
 path without enough says "Little data".
 
-The cards count all your recordings by default. **This session** shows
-only the current one.
+On the **Overview** the cards count only what happened since you started
+the program — today's play, not last week's. **History** shows the same
+cards over all your recordings, which is what the star and the
+recommendation need to be fair: a single evening can be all calm or all
+bad.
+
+**Server stalls** is the one number that has nothing to do with lost
+packets. A game server sends a steady stream of updates — AION 2 about
+three a second. When it lags, it stops sending for a second or more,
+while still confirming everything your game sends to it. Nothing is lost
+on the way, so Stability and Loss stay at 100 % and 0 %, and the ping is
+only measured while data arrives — yet in the game everything freezes and
+then jumps. On 14 November 2026, when many players reported lag, the
+server did this about 45 times an hour, once for 7.5 seconds; on the days
+before, about never. Green under 3 an hour, amber under 15, red above. The
+chart marks each minute with a stall in red at the top, with the count.
+Since the stall is on the server's side, changing the path is unlikely to
+help, and stalls do not decide the star or the recommendation. A loading
+screen can count as a stall too, if the server is quiet while your game
+keeps talking to it.
 
 A minute counts as having loss when at least half a percent of its packets
 were lost. For the background ping of your normal connection the bar is
@@ -183,7 +217,9 @@ going back to character select.
 
 ### The recommendation
 
-At the bottom, drawn from all your recordings. It names a VPN server
+Its headline is at the bottom of the **Overview**, and the whole of it,
+with the reasoning, under **History**. It is always drawn from all your
+recordings. It names a VPN server
 family, and says in how many minutes its ping was steady, next to your
 normal connection's:
 
@@ -208,8 +244,8 @@ alarm do not count against your normal connection.
 ### Advanced
 
 **Advanced** shows everything behind the overview: the full comparison
-table, how reliable the background ping has proven, the reasoning behind
-the recommendation, the last probes and events, **Compare sessions…** to
+table (with each path's server stalls), how reliable the background ping
+has proven, the reasoning behind the recommendation, the last probes and events, **Compare sessions…** to
 add older recordings, and **Session folder** with the log files.
 
 ## When it stutters

@@ -137,7 +137,7 @@ for `vpnct-gui` alone); the measuring is done by `ss`, `ip`,
 Per captured connection, one pipeline:
 
 ```
-dumpcap -q -i <iface> -s 96 -f "host R and tcp port P and tcp port L" -w -  |  tshark -l -n -r - -Y tcp.len>0 -T fields ...
+dumpcap -q -i <iface> -s 96 -f "host R and tcp port P and tcp port L" -w -  |  tshark -l -n -r - -T fields ...
 ```
 
 Why this shape:
@@ -187,6 +187,32 @@ end**:
 | `lost_gaps` | sequence jumps (`tcp.analysis.lost_segment`). A burst of consecutive losses is **one** gap. |
 | `retrans` | retransmissions by the remote end (`tcp.analysis.retransmission`) — the closer count of packets actually lost |
 | `covered_s` | seconds of that minute the pipeline was running |
+| `stalls` | pauses of `STALL_MIN_S` (1 s) or more between two data packets from the remote end, while our side sent data and the remote end kept acknowledging it |
+| `stall_s`, `stall_max_s` | their total and longest length, seconds |
+| `silent` | such pauses in which nothing at all came back |
+
+**Stalls** — loss and RTT cannot see a server that stops sending. The
+remote end's bare acknowledgements are why tshark gets every packet, not
+only those with data (it filtered `tcp.len>0` before): an acknowledgement
+during a pause says the connection, and the machine answering for the
+server, were alive, so the pause was the server's program (`stalls`); no
+packet at all says the connection itself went quiet (`silent`). A pause in
+which our side sent nothing either is not counted — nobody was talking. A
+pause is counted in the minute it ends in (`Pipeline.add`, `_Pause`).
+
+Measured 2026-11-14 on AION 2, when many players reported lag: the server
+sends data about every 0.3 s; it paused for 0.6, 1.2, 2.4 and once 7.5 s —
+whole multiples of its 0.6 s tick — 7 times of 1 s or more in 6 minutes,
+acknowledging our packets within 17–58 ms throughout, with one
+retransmission in those minutes. Nothing in loss, Stability or the ping
+showed it: the kernel's RTT is only sampled in seconds with data. In
+`samples.csv`, seconds without server data were 0.00–0.09 % on the days
+9–12 November and 2.0 % that evening. The game's address is announced by
+Cloudflare (AS13335) and the route enters its network in Frankfurt, so
+"the machine answering for the server" may be Cloudflare's edge rather
+than the game server; either way the pause lies beyond the route a VPN
+changes, as far as this measurement can tell. A loading screen in which
+the client keeps talking and the server is quiet also counts as a stall.
 
 A quiet minute is a row of zeros with `covered_s` 60, never a missing row;
 a minute the capture did not fully see has a smaller `covered_s`. A
@@ -345,7 +371,7 @@ interrupted session keeps everything up to its last second.
 |---|---|---|
 | `session.json` | session | version, start, host, selection, extra targets, periods |
 | `samples.csv` | second × watched connection | time, program, local, remote, path, `rtt_ms`, `rttvar_ms`, `minrtt_ms`, `d_bytes_in`, `d_data_segs_in`, `d_retrans` (our retransmissions), `d_ooopack` (segments that arrived out of order — rises with loss) |
-| `losses.csv` | minute × captured connection | §4 |
+| `losses.csv` | minute × captured connection | §4; `stalls`, `stall_s`, `stall_max_s`, `silent` since 2026-11-14 — older files lack them, and the report counts their minutes as not measured for stalls, never as stall-free |
 | `probes.csv` | ping | time, target, role, bound, interface, path, sent, received, `loss_pct`, `rtt_min/avg/max`, error |
 | `hops.csv` | hop × trace | time, target, path, hop, address, sent, received, `loss_pct`, `rtt_avg`, error |
 | `monitor.csv` | minute × monitored server × direct interface | §5a |
@@ -375,6 +401,9 @@ second and each captured minute once.
   (the kernel updates RTT only on traffic).
 - **jumpy min** — minutes in which the ping jumped, of the minutes with
   enough seconds to tell (§10, Jumpy minute).
+- **stalls/h**, **longest** — server stalls (§4) per hour of judged
+  minutes recorded with stall counting (`Group.stalls_per_hour`,
+  `MinuteAgg.stall_judged`); `-` when none was.
 - **loss %** — remote retransmissions per captured data packet;
   **rtx/min** — per captured minute; **worst min %** — the worst single
   minute with at least 50 data packets.
@@ -429,20 +458,28 @@ extra RTT), or whether the VPN lost more. The window shows the same lines.
 The window's title carries `__version__` (§13). The window opens
 maximized the first time it is shown (`App.show_window`);
 after that it keeps the size it was given when it is hidden and shown again.
-The window has two views, switched by **Advanced** in its header:
+The window has three views, switched in its header (`Window.VIEW_*`):
 
-- **Overview** — the answer to "which path should I play on?" for one
+- **Overview** — what happened since the program started, for one
   service (the busiest one with enough judged minutes is chosen first):
   a banner with the live hint (§10) and the path in use; the **Recently**
   panel (`advice.recent_view`, §10) for the last 15 min / 1 h / 3 h of this
-  session; one card per tested path (`advice.path_cards`) with five
-  numbers — one card per VPN server family (§10), its servers named in the
-  subtitle's tooltip;
-  the chart; the recommendation's headline. The cards read the all-sessions summary by
-  default ("This session" switches to the current session's).
+  session; one card per tested path (`advice.path_cards`, a `CardRow`)
+  read from this session's summary (`Window.summary`, plus any sessions
+  added with Compare sessions…) — one card per VPN server family (§10),
+  its servers named in the subtitle's tooltip; the chart; the
+  recommendation's headline.
+- **History** — all recordings together: the same cards from the
+  all-sessions summary (`Window.all_summary`), and the recommendation with
+  its reasoning. Raman asked for the split on 2026-11-14: with all
+  recordings on the main screen, a bad evening did not show on it.
 - **Advanced** — everything else: status, the full comparison table,
   calibration, the recommendation's reasoning, the last probes, events,
   Compare sessions…, the session folder.
+
+The ★ and the recommendation are fair only over many sessions, so the
+RTT cost and best VPN that Recently names come from the all-sessions cards
+(`comparison_from_cards`) whichever view is shown.
 
 Card numbers:
 
@@ -453,6 +490,7 @@ Card numbers:
 | Steady ping | minutes in which the ping did not jump, of those with enough seconds (§10); shown this way round so that, like Stability, more is better | `Group.ping_minutes`, `spiky_minutes` |
 | Stability | judged minutes that were not bad (§10) | `Group.judged_minutes`, `bad_minutes` |
 | Loss | remote retransmissions per captured data packet | `report.loss_pct` |
+| Server stalls | stalls (§4) per measured hour; green under `STALLS_FAIR_PER_H` (3), amber under `STALLS_POOR_PER_H` (15), red above — set from about 0/h on normal evenings and about 45/h on 2026-11-14; `–` when not measured. Not part of ★: a stall on the server's side is not a property of the path | `Group.stalls_per_hour`, `stall_max_s` |
 
 "Spikes" is not the kernel's `rttvar`. Measured on the AION 2 recordings
 (2026-11-09): `rttvar` had a median of 12–16 ms on every path, including the
@@ -479,7 +517,10 @@ recommendation.
 
 Look: a fixed dark theme (`THEME`, `STYLE`, `apply_theme`: Fusion style,
 palette and one stylesheet), so the window is the same on any desktop
-theme; the chart is painted with the same colours.
+theme; the chart is painted with the same colours. The chart marks every
+minute with a server stall (§4) in red at the top of the ping area, with
+the count: a stall loses nothing, so it leaves no bar, and the ping line
+only has points for seconds with data.
 
 - **Settings**: command-line options as for `vpnct record`; without them,
   `config.toml` (`vpnct/config.py`: `programs`, `ports`, `targets`). An
@@ -592,8 +633,12 @@ little. A hint resting on the direct-path ping says so as long as the
 calibration (§8) is not confirmed. When the connection's ping jumped in
 `RECENT_BAD` of its last `RECENT_MINUTES` minutes on the path in use, the
 hint's text says so (from the last `HINT_JUMPY_LOOKBACK_S` 600 s of
-seconds); its level does not change. A change to **switch** or **return** is
-also a tray notification, once per change.
+seconds); its level does not change. When the game server stalled (§4)
+`STALL_HINT_MIN` (2) or more times in the last `RECENT_MINUTES` captured
+minutes of the path in use, the text says so, with the longest stall, and
+that the lag is on the server's side (`advice.stall_text`); the level does
+not change either — a switch would not help. A change to **switch** or
+**return** is also a tray notification, once per change.
 
 ### Recommendation (`advice.recommend`, `vpnct recommend`, window)
 
@@ -644,11 +689,16 @@ given.
 
 What each path did over the last 15 min, 1 h or 3 h of this session, from
 the window's in-memory history: per path (VPN servers by family) of the
-connection's own traffic, judged minutes, minutes with loss, jumpy minutes
-and ping; while on a VPN, the direct-path monitor's minutes, lost-ping
+connection's own traffic, judged minutes, minutes with loss, jumpy minutes,
+server stalls with the longest (the line turns amber or red by stalls per
+hour, as on the cards) and ping; while on a VPN, the direct-path monitor's minutes, lost-ping
 minutes and minutes with a ping `SPIKE_MAX_MS` over the minute's median
 (raw ping, so a looser measure than the connection's smoothed RTT); the
-**Tunnel** line; the latest route verdict. Then one conclusion.
+**Tunnel** line; the latest route verdict. Then one conclusion. When the
+server stalled `STALL_HINT_MIN` or more times on the path in use within
+the span, the conclusion adds so, and an "ok" conclusion becomes "stay"
+(amber): the connection was clean, the game was not (`recent_view` around
+`_recent_view`).
 
 The **Tunnel** line (`advice._tunnel_line`) counts the jumpy probe rounds
 (§8) to the VPN server through the tunnel (`vpn-gateway`) and outside it

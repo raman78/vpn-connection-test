@@ -94,6 +94,10 @@ class MinutePoint:
     data_pkts: int
     lost_gaps: int
     retrans: int
+    stalls: int = 0          # pauses >= capture.STALL_MIN_S in the server's data, link answering
+    stall_s: float = 0.0
+    stall_max_s: float = 0.0
+    silent: int = 0          # such pauses with nothing at all coming back
 
 
 @dataclass
@@ -294,12 +298,15 @@ class Engine:
                 "program": program, "local": _ep(lip, lport), "remote": _ep(rip, rport),
                 "covered_s": r.covered_s, "data_pkts": r.data_pkts,
                 "lost_gaps": r.lost_gaps, "retrans": r.retrans,
+                "stalls": r.stalls, "stall_s": r.stall_s, "stall_max_s": r.stall_max_s,
+                "silent": r.silent,
             })
         points = []
         for r in rows:
             program, path = self._key_info.get(r.key, ("?", self.paths.path_for_interface(r.interface)))
             points.append(MinutePoint(r.minute, program, r.key[3], r.key[2], r.key[1], path.label, path.is_vpn,
-                                      r.covered_s, r.data_pkts, r.lost_gaps, r.retrans))
+                                      r.covered_s, r.data_pkts, r.lost_gaps, r.retrans,
+                                      r.stalls, r.stall_s, r.stall_max_s, r.silent))
         with self._lock:
             self._last_minute = rows
             self._updates += points
