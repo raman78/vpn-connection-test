@@ -545,6 +545,8 @@ class Window(QMainWindow):
         ("jumpy minutes", lambda g: f"{g.spiky_minutes} of {g.ping_minutes}"),
         ("server stalls", lambda g: (f"{g.stalls} in {g.stall_minutes} min, longest {g.stall_max_s:.1f} s"
                                      if g.stall_minutes else "not measured")),
+        ("short stalls (0.5–1 s)", lambda g: report._n(g.short_stalls_per_hour, "{:.0f} / h")
+                                             if g.short_stalls_per_hour is not None else "not measured"),
     ]
     BANNER = {  # level -> (background, accent, title)
         "switch": (THEME["bad_bg"], THEME["bad"], "Losing packets — switch to the VPN"),

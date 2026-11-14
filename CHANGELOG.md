@@ -11,7 +11,8 @@ What changed for users, release by release. Technical details are in
   answering — the lag many players feel at once, which loses no packet and
   so never showed in Stability, Loss or the ping. It is a number on every
   card, red marks on the chart, and a line in **Recently** and the banner
-  saying the lag is on the server's side.
+  saying the lag is on the server's side. Shorter pauses, half a second to
+  a second, are counted under **Advanced**.
 - **History** view: the cards over all recordings, and the recommendation
   with its reasoning. The **Overview** now shows only what happened since
   the program started, so a bad evening is visible at a glance.

@@ -190,6 +190,7 @@ end**:
 | `stalls` | pauses of `STALL_MIN_S` (1 s) or more between two data packets from the remote end, while our side sent data and the remote end kept acknowledging it |
 | `stall_s`, `stall_max_s` | their total and longest length, seconds |
 | `silent` | such pauses in which nothing at all came back |
+| `stalls_short` | pauses of `STALL_SHORT_S` (0.5 s) up to 1 s, the remote end answering — a skipped server tick |
 
 **Stalls** — loss and RTT cannot see a server that stops sending. The
 remote end's bare acknowledgements are why tshark gets every packet, not
@@ -213,6 +214,21 @@ Cloudflare (AS13335) and the route enters its network in Frankfurt, so
 than the game server; either way the pause lies beyond the route a VPN
 changes, as far as this measurement can tell. A loading screen in which
 the client keeps talking and the server is quiet also counts as a stall.
+
+Why Questlog showed large ping jumps that evening while the cards showed
+none: Questlog's ping is the game's own — it reads the server's ping reply
+(`Ping_RS`, which carries the time the game sent its request) and takes the
+difference, so it includes the time the server's program took to answer.
+The cards' Ping is the kernel's RTT, timed on acknowledgements that the
+machine answering for the server sends without waiting for the game, and
+the direct-path monitor's ping measures the network alone. A skipped
+0.6 s tick delays the game's ping reply by as much; there were 56 such
+pauses in those 6 minutes. `stalls_short` records them, apart from
+`stalls`, and is shown only in the report and the Advanced table until a
+normal evening shows how many are usual — the AION 2 server may skip
+single ticks on calm days too. Reading the game's ping reply directly
+would mean decoding the game's packets, which this tool does not do: it
+keeps only headers, and stays generic.
 
 A quiet minute is a row of zeros with `covered_s` 60, never a missing row;
 a minute the capture did not fully see has a smaller `covered_s`. A
@@ -371,7 +387,7 @@ interrupted session keeps everything up to its last second.
 |---|---|---|
 | `session.json` | session | version, start, host, selection, extra targets, periods |
 | `samples.csv` | second × watched connection | time, program, local, remote, path, `rtt_ms`, `rttvar_ms`, `minrtt_ms`, `d_bytes_in`, `d_data_segs_in`, `d_retrans` (our retransmissions), `d_ooopack` (segments that arrived out of order — rises with loss) |
-| `losses.csv` | minute × captured connection | §4; `stalls`, `stall_s`, `stall_max_s`, `silent` since 2026-11-14 — older files lack them, and the report counts their minutes as not measured for stalls, never as stall-free |
+| `losses.csv` | minute × captured connection | §4; `stalls`, `stall_s`, `stall_max_s`, `silent` since 2026-11-14, `stalls_short` a few hours later (each counted only where its column exists) — older files lack them, and the report counts their minutes as not measured for stalls, never as stall-free |
 | `probes.csv` | ping | time, target, role, bound, interface, path, sent, received, `loss_pct`, `rtt_min/avg/max`, error |
 | `hops.csv` | hop × trace | time, target, path, hop, address, sent, received, `loss_pct`, `rtt_avg`, error |
 | `monitor.csv` | minute × monitored server × direct interface | §5a |
@@ -403,7 +419,8 @@ second and each captured minute once.
   enough seconds to tell (§10, Jumpy minute).
 - **stalls/h**, **longest** — server stalls (§4) per hour of judged
   minutes recorded with stall counting (`Group.stalls_per_hour`,
-  `MinuteAgg.stall_judged`); `-` when none was.
+  `MinuteAgg.stall_judged`); `-` when none was. **short/h** — short stalls
+  (`stalls_short`) the same way (`Group.short_stalls_per_hour`).
 - **loss %** — remote retransmissions per captured data packet;
   **rtx/min** — per captured minute; **worst min %** — the worst single
   minute with at least 50 data packets.

@@ -20,7 +20,7 @@ SAMPLES_FIELDS = ["time", "program", "local", "remote", "path", "rtt_ms", "rttva
                   "minrtt_ms", "d_bytes_in", "d_data_segs_in", "d_retrans", "d_ooopack"]
 LOSSES_FIELDS = ["minute", "interface", "path", "program", "local", "remote",
                  "covered_s", "data_pkts", "lost_gaps", "retrans",
-                 "stalls", "stall_s", "stall_max_s", "silent"]
+                 "stalls", "stall_s", "stall_max_s", "silent", "stalls_short"]
 PROBES_FIELDS = ["time", "target", "role", "bound", "interface", "path", "sent", "received",
                  "loss_pct", "rtt_min", "rtt_avg", "rtt_max", "error"]
 HOPS_FIELDS = ["time", "target", "path", "hop", "address", "sent", "received", "loss_pct",

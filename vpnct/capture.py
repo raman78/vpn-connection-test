@@ -32,6 +32,11 @@ two data packets from the remote end, during which our side sent data.
   only when data arrives.
 - silent: such pauses in which nothing at all came back: the connection
   itself went quiet.
+- stalls_short: pauses of STALL_SHORT_S up to STALL_MIN_S, link answering.
+  The AION 2 server skips single 0.6 s ticks this way; the game's own ping
+  (which Questlog shows, read from the game's ping reply) jumps by as much.
+  Recorded to learn how many a normal evening has before anything judges
+  them.
 A pause is counted in the minute it ends in. A pause in which our side sent
 nothing either is not counted: nobody was talking.
 
@@ -54,6 +59,7 @@ CAPTURE_SNAPLEN = 96
 FLUSH_DELAY_S = 2.0          # wait for late lines before closing a minute
 RETRY_AFTER_S = 10.0
 STALL_MIN_S = 1.0            # a pause in the remote end's data this long is a stall
+STALL_SHORT_S = 0.5          # and from this long up to STALL_MIN_S, a short stall
 
 TSHARK_FIELDS = ["frame.time_epoch", "ip.src", "ipv6.src", "tcp.srcport",
                  "ip.dst", "ipv6.dst", "tcp.dstport", "tcp.len",
@@ -119,6 +125,7 @@ class MinuteRow:
     stall_s: float = 0.0
     stall_max_s: float = 0.0
     silent: int = 0
+    stalls_short: int = 0
 
 
 @dataclass
@@ -135,7 +142,7 @@ class Pipeline:
     keys: frozenset[Key]
     started: float
     stopped: float | None = None
-    counts: dict = field(default_factory=dict)       # (minute, key) -> [data, lost, retrans, stalls, stall_s, stall_max_s, silent]
+    counts: dict = field(default_factory=dict)       # (minute, key) -> [data, lost, retrans, stalls, stall_s, stall_max_s, silent, stalls_short]
     pauses: dict = field(default_factory=dict)       # key -> _Pause
     lock: threading.Lock = field(default_factory=threading.Lock)
     procs: list = field(default_factory=list)
@@ -155,7 +162,7 @@ class Pipeline:
             return
         minute = int(p.time // 60) * 60
         with self.lock:
-            c = self.counts.setdefault((minute, key), [0, 0, 0, 0, 0.0, 0.0, 0])
+            c = self.counts.setdefault((minute, key), [0, 0, 0, 0, 0.0, 0.0, 0, 0])
             pause = self.pauses.setdefault(key, _Pause())
             if p.length == 0:
                 pause.remote_seen = True
@@ -172,6 +179,8 @@ class Pipeline:
                         c[5] = max(c[5], gap)
                     else:
                         c[6] += 1
+                elif gap >= STALL_SHORT_S and pause.remote_seen:
+                    c[7] += 1
             pause.last_data, pause.remote_seen, pause.local_data = p.time, False, False
 
     def take_rows(self, now: float, final: bool = False) -> list[MinuteRow]:
@@ -186,9 +195,10 @@ class Pipeline:
                 covered = max(0.0, min(minute + 60, end) - max(minute, self.started))
                 if covered > 0:
                     for key in sorted(self.keys):
-                        d, l, r, st, ss, sm, si = self.counts.pop((minute, key), (0, 0, 0, 0, 0.0, 0.0, 0))
+                        d, l, r, st, ss, sm, si, sh = self.counts.pop((minute, key),
+                                                                      (0, 0, 0, 0, 0.0, 0.0, 0, 0))
                         rows.append(MinuteRow(minute, self.interface, key, round(covered, 1), d, l, r,
-                                              st, round(ss, 2), round(sm, 2), si))
+                                              st, round(ss, 2), round(sm, 2), si, sh))
                 minute += 60
             self.flushed_until = minute
         return rows

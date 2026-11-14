@@ -120,6 +120,16 @@ class PipelineTests(unittest.TestCase):
         (r,) = pipe.take_rows(now=1085.0)
         self.assertEqual((r.data_pkts, r.stalls, r.stall_s, r.stall_max_s, r.silent), (3, 1, 2.5, 2.5, 0))
 
+    def test_skipped_tick_is_a_short_stall(self):
+        pipe = Pipeline("eth0", frozenset({KEY}), started=1020.0)
+        pipe.add(self._line(1030.0))
+        pipe.add(self._ours(1030.1))
+        pipe.add(self._ack(1030.12))
+        pipe.add(self._line(1030.6))                 # 0.6 s: one skipped tick
+        pipe.add(self._line(1030.9))                 # 0.3 s: normal pace
+        (r,) = pipe.take_rows(now=1085.0)
+        self.assertEqual((r.stalls, r.stalls_short), (0, 1))
+
     def test_pause_without_any_answer_is_silent(self):
         pipe = Pipeline("eth0", frozenset({KEY}), started=1020.0)
         pipe.add(self._line(1030.0))

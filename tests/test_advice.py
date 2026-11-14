@@ -494,3 +494,17 @@ class StallTests(unittest.TestCase):
         self.assertAlmostEqual(c["VPN · X"].stalls_per_hour, 15.0)
         self.assertEqual(c["VPN · X"].stall_level, "poor")
         self.assertEqual(c["VPN · X"].stall_minutes, 20)
+
+    def test_short_stalls_per_hour_and_rows_without_the_column(self):
+        from vpnct.report import by_service
+        first = [dict(loss(f"a{m}", 0), stalls=0, stall_s=0, stall_max_s=0, silent=0)
+                 for m in range(20)]                                   # before stalls_short existed
+        later = [dict(loss(f"b{m}", 0), stalls=0, stall_s=0, stall_max_s=0, silent=0,
+                      stalls_short=3 if m < 10 else 0) for m in range(20)]
+        with tempfile.TemporaryDirectory() as tmp:
+            write_session(Path(tmp) / "a", {"losses.csv": first})
+            write_session(Path(tmp) / "b", {"losses.csv": later})
+            s = summarise([Path(tmp) / "a", Path(tmp) / "b"])
+        g = by_service(s["groups"])[("GAME.exe", "13328")]["direct:eth0"]
+        self.assertAlmostEqual(g.short_stalls_per_hour, 90.0)       # 30 in 20 measured minutes
+        self.assertEqual(g.stall_minutes, 40)

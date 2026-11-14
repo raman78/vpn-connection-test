@@ -200,6 +200,13 @@ help, and stalls do not decide the star or the recommendation. A loading
 screen can count as a stall too, if the server is quiet while your game
 keeps talking to it.
 
+Why other tools, such as Questlog, may show bigger ping jumps: their ping
+is the game's own, which waits for the server's program to answer, so
+every short stall shows in it. The cards' **Ping** measures the
+connection, which stays steady while the server lags. Pauses of half a
+second to a second are counted too, under **Advanced**, until it is known
+how many a normal evening has.
+
 A minute counts as having loss when at least half a percent of its packets
 were lost. For the background ping of your normal connection the bar is
 3 % of the pings, because a few lost pings are normal.
@@ -244,7 +251,8 @@ alarm do not count against your normal connection.
 ### Advanced
 
 **Advanced** shows everything behind the overview: the full comparison
-table (with each path's server stalls), how reliable the background ping
+table (with each path's server stalls, and the short ones of half a
+second to a second, which are recorded but not yet judged), how reliable the background ping
 has proven, the reasoning behind the recommendation, the last probes and events, **Compare sessions…** to
 add older recordings, and **Session folder** with the log files.
 

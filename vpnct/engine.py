@@ -98,6 +98,7 @@ class MinutePoint:
     stall_s: float = 0.0
     stall_max_s: float = 0.0
     silent: int = 0          # such pauses with nothing at all coming back
+    stalls_short: int = 0    # pauses from capture.STALL_SHORT_S up to STALL_MIN_S, link answering
 
 
 @dataclass
@@ -299,14 +300,14 @@ class Engine:
                 "covered_s": r.covered_s, "data_pkts": r.data_pkts,
                 "lost_gaps": r.lost_gaps, "retrans": r.retrans,
                 "stalls": r.stalls, "stall_s": r.stall_s, "stall_max_s": r.stall_max_s,
-                "silent": r.silent,
+                "silent": r.silent, "stalls_short": r.stalls_short,
             })
         points = []
         for r in rows:
             program, path = self._key_info.get(r.key, ("?", self.paths.path_for_interface(r.interface)))
             points.append(MinutePoint(r.minute, program, r.key[3], r.key[2], r.key[1], path.label, path.is_vpn,
                                       r.covered_s, r.data_pkts, r.lost_gaps, r.retrans,
-                                      r.stalls, r.stall_s, r.stall_max_s, r.silent))
+                                      r.stalls, r.stall_s, r.stall_max_s, r.silent, r.stalls_short))
         with self._lock:
             self._last_minute = rows
             self._updates += points
