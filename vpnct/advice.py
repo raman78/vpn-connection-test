@@ -430,6 +430,8 @@ class PathCard:
     stalls_per_hour: float | None = None   # server stalls per measured hour; None: not measured
     stall_max_s: float = 0.0
     stall_minutes: int = 0
+    lossy_minutes: int = 0     # judged minutes with noticeable loss (shown as "Packet loss")
+    lost_packets: int = 0      # remote retransmissions
     best: bool = False
     best_reason: str = ""
 
@@ -497,7 +499,7 @@ def path_cards(paths: dict[str, Group]) -> list[PathCard]:
             loss_pct(g), judged, len(g.judged_sessions), judged >= REC_MIN_SERVER_MINUTES,
             100.0 * g.spiky_minutes / g.ping_minutes if g.ping_minutes else None, g.ping_minutes,
             tuple(sorted(m.partition(" [")[2].rstrip("]") for m in g.members if m != path)),
-            g.stalls_per_hour, g.stall_max_s, g.stall_minutes))
+            g.stalls_per_hour, g.stall_max_s, g.stall_minutes, g.bad_minutes, g.retrans))
     rank = lambda c: _LEVEL_RANK[c.jumpy_level]
     ranked = sorted((c for c in cards if c.enough), key=card_rank)
     if len(ranked) >= 2:
@@ -506,11 +508,11 @@ def path_cards(paths: dict[str, Group]) -> list[PathCard]:
         stab = lambda c: _LEVEL_RANK[c.stability_level]
         equal = [o for o in others if stab(o) <= stab(first)]
         if not equal:
-            first.best_reason = "most stable"
+            first.best_reason = "least packet loss"
         elif all(rank(first) < rank(o) for o in equal):
-            first.best_reason = "as stable, steadier ping"
+            first.best_reason = "as little loss, steadier ping"
         else:
-            first.best_reason = "as stable, lowest ping"
+            first.best_reason = "as little loss, lowest ping"
     return sorted(cards, key=lambda c: (c.is_vpn, c.title))
 
 

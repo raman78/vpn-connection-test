@@ -30,7 +30,8 @@ AION 2. Nothing in it is specific to that game or that VPN.
 3. `vpnct install-desktop`, then start **VPN connection test** from the
    application menu.
 4. Use your program as usual: on the normal connection, on the VPN, on
-   different VPN servers. The window shows which one is the most stable.
+   different VPN servers. The window shows which one loses the fewest packets
+   and keeps the steadiest ping.
 
 ## Documentation
 

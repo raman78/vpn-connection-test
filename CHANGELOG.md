@@ -22,6 +22,12 @@ What changed for users, release by release. Technical details are in
   event list says so for each such connection. Before, it was left out of
   the measurement with only a count to show for it.
 
+### Changed
+- **Stability** and **Loss** on the cards are now one number, **Packet
+  loss**: in how many measured minutes packets were lost (for example
+  "2 of 2389 min"), and under it how many packets were lost and what share
+  of all.
+
 ### Fixed
 - A game connection could go unmeasured for its whole life when the
   system listed it for a moment without its program, as happens at a switch

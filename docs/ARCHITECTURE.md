@@ -205,7 +205,7 @@ Measured 2026-11-14 on AION 2, when many players reported lag: the server
 sends data about every 0.3 s; it paused for 0.6, 1.2, 2.4 and once 7.5 s —
 whole multiples of its 0.6 s tick — 7 times of 1 s or more in 6 minutes,
 acknowledging our packets within 17–58 ms throughout, with one
-retransmission in those minutes. Nothing in loss, Stability or the ping
+retransmission in those minutes. Nothing in loss, lossy minutes or the ping
 showed it: the kernel's RTT is only sampled in seconds with data. In
 `samples.csv`, seconds without server data were 0.00–0.09 % on the days
 9–12 November and 2.0 % that evening. The game's address is announced by
@@ -504,9 +504,8 @@ Card numbers:
 |---|---|---|
 | Ping | median RTT over seconds with data | `Group.rtts` |
 | Spikes | RTT p95 minus median — how far the ping jumps above usual | `Group.rtts` |
-| Steady ping | minutes in which the ping did not jump, of those with enough seconds (§10); shown this way round so that, like Stability, more is better | `Group.ping_minutes`, `spiky_minutes` |
-| Stability | judged minutes that were not bad (§10) | `Group.judged_minutes`, `bad_minutes` |
-| Loss | remote retransmissions per captured data packet | `report.loss_pct` |
+| Steady ping | minutes in which the ping did not jump, of those with enough seconds (§10); shown this way round so that more is better | `Group.ping_minutes`, `spiky_minutes` |
+| Packet loss | bad minutes (§10) "of" judged minutes; under it, remote retransmissions and their share of captured data packets. Coloured by `PathCard.stability_level` on the share of judged minutes that were not bad. Called "Stability" until 2026-11-14 and shown as that share, with Loss as a separate number; Raman asked for a name that says what is counted, next to Steady ping and Server stalls | `Group.judged_minutes`, `bad_minutes`, `retrans`, `report.loss_pct` |
 | Server stalls | stalls (§4) per measured hour; green under `STALLS_FAIR_PER_H` (3), amber under `STALLS_POOR_PER_H` (15), red above — set from about 0/h on normal evenings and about 45/h on 2026-11-14; `–` when not measured. Not part of ★: a stall on the server's side is not a property of the path | `Group.stalls_per_hour`, `stall_max_s` |
 
 "Spikes" is not the kernel's `rttvar`. Measured on the AION 2 recordings
@@ -517,18 +516,18 @@ steadiest path as shaky. p95 minus median was 3 ms direct, 7–9 ms through
 the VPN servers.
 
 **★ Best** goes to one card, and only when at least two paths have
-`REC_MIN_SERVER_MINUTES` judged minutes (`advice.card_rank`): the highest
-stability **level** (`STABLE_PCT` 99 %, `SHAKY_PCT` 95 % — the card's
-colours), not the exact value. The exact value put a VPN family with 0 bad
+`REC_MIN_SERVER_MINUTES` judged minutes (`advice.card_rank`): the best
+packet-loss **level** (`STABLE_PCT` 99 %, `SHAKY_PCT` 95 % of judged
+minutes without loss — the card's colours), not the exact value. The exact value put a VPN family with 0 bad
 minutes of 52 above the direct path with 2 of 1629 (99.9 %), although the
 direct path's ping was steadier and 11 ms lower, and the recommendation
 said to stay direct (measured 2026-11-12): 52 minutes cannot show a
-difference of 0.1 %. Among equally stable paths the steadier ping (by level of jumpy minutes: under
+difference of 0.1 %. Among paths on the same level the steadier ping (by level of jumpy minutes: under
 `JUMPY_FAIR_PCT` 5 %, under `JUMPY_POOR_PCT` 20 %, or more — Steady ping
 95 % and over, 80 % and over, below), then the
 lowest ping (loss below the bad-minute threshold is not felt); loss only
-breaks a tie. The badge says which ("most stable", "as stable, steadier
-ping" or "as stable, lowest ping"). A path with fewer minutes says "Little data". Cards
+breaks a tie. The badge says which ("least packet loss", "as little
+loss, steadier ping" or "as little loss, lowest ping"). A path with fewer minutes says "Little data". Cards
 count only sessions with judged minutes on that path, the same basis as the
 recommendation.
 

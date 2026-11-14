@@ -188,10 +188,12 @@ class PathCardTests(unittest.TestCase):
         c = self.cards([rows])
         self.assertEqual(set(c), {"Direct", "VPN · VPN NL"})      # server family, number dropped
         self.assertAlmostEqual(c["Direct"].stability_pct, 90.0)
+        self.assertEqual((c["Direct"].lossy_minutes, c["Direct"].judged_minutes, c["Direct"].lost_packets),
+                         (5, 50, 100))
         self.assertEqual(c["Direct"].stability_level, "poor")
         self.assertEqual(c["VPN · VPN NL"].stability_pct, 100.0)
         self.assertTrue(c["VPN · VPN NL"].best)
-        self.assertEqual(c["VPN · VPN NL"].best_reason, "most stable")
+        self.assertEqual(c["VPN · VPN NL"].best_reason, "least packet loss")
         self.assertFalse(c["Direct"].best)
 
     def test_no_best_with_only_one_comparable_path(self):
@@ -234,7 +236,7 @@ class BestPathTests(unittest.TestCase):
         samples += [sample_row(f"v{i}", vpn, 43) for i in range(30)]
         c = self.cards(losses, samples)
         self.assertTrue(c["Direct"].best)
-        self.assertEqual(c["Direct"].best_reason, "as stable, lowest ping")
+        self.assertEqual(c["Direct"].best_reason, "as little loss, lowest ping")
         self.assertFalse(c["VPN · X"].best)
 
     def test_more_stable_beats_lower_ping(self):
@@ -245,7 +247,7 @@ class BestPathTests(unittest.TestCase):
         samples += [sample_row(f"v{i}", vpn, 43) for i in range(30)]
         c = self.cards(losses, samples)
         self.assertTrue(c["VPN · X"].best)
-        self.assertEqual(c["VPN · X"].best_reason, "most stable")
+        self.assertEqual(c["VPN · X"].best_reason, "least packet loss")
 
 
 class RecentViewTests(unittest.TestCase):
@@ -410,7 +412,7 @@ class JumpyRankingTests(unittest.TestCase):
         self.assertEqual(c["VPN · A"].steady_pct, 50.0)
         self.assertEqual(c["VPN · A"].jumpy_level, "poor")
         self.assertTrue(c["VPN · B"].best)
-        self.assertEqual(c["VPN · B"].best_reason, "as stable, steadier ping")
+        self.assertEqual(c["VPN · B"].best_reason, "as little loss, steadier ping")
 
     def test_stability_compared_by_level_not_exact_value(self):
         # The 2026-11-12 case: a long direct record with one bad minute
@@ -427,7 +429,7 @@ class JumpyRankingTests(unittest.TestCase):
         self.assertAlmostEqual(c["Direct"].stability_pct, 99.0)
         self.assertEqual(c["VPN · X"].stability_pct, 100.0)
         self.assertTrue(c["Direct"].best)
-        self.assertEqual(c["Direct"].best_reason, "as stable, steadier ping")
+        self.assertEqual(c["Direct"].best_reason, "as little loss, steadier ping")
         self.assertFalse(c["VPN · X"].best)
 
     def test_recommendation_ranks_families_and_names_jumps(self):

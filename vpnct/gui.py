@@ -402,7 +402,7 @@ LEVEL_COLOURS = {"good": THEME["good"], "fair": THEME["warn"], "poor": THEME["ba
 
 
 class PathCardWidget(QFrame):
-    """One tested path: ping, spikes, jumpy minutes, stability, loss, how much data."""
+    """One tested path: ping, spikes, jumpy minutes, packet loss, server stalls, how much data."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -430,15 +430,15 @@ class PathCardWidget(QFrame):
             "Steady ping": "Share of minutes in which the ping did not jump. A minute jumps when, within "
                            f"it, the 95th percentile is {report.SPIKE_SPREAD_MS:.0f} ms or one second "
                            f"{report.SPIKE_MAX_MS:.0f} ms over its median. Nothing need be lost in such a "
-                           "minute; it is counted apart from Stability.",
-            "Stability": "Share of measured minutes without packet loss (a minute is lost-free below "
-                         f"{report.CAL_TCP_BAD_PCT} % retransmitted).",
-            "Loss": "Packets the server had to send again, of all it sent.",
+                           "minute; it is counted apart from packet loss.",
+            "Packet loss": "Measured minutes in which packets were lost (a minute counts from "
+                           f"{report.CAL_TCP_BAD_PCT} % of its packets resent), and below: the packets "
+                           "the server had to send again, and their share of all it sent.",
             "Server stalls": "Pauses of a second or more in the game server's data while the connection "
                              "kept answering, per hour measured. The server lagged; nothing was lost on "
-                             "the way, so Stability and Loss do not show it.",
+                             "the way, so Packet loss does not show it.",
         }
-        for i, name in enumerate(("Ping", "Spikes", "Steady ping", "Stability", "Loss", "Server stalls")):
+        for i, name in enumerate(("Ping", "Spikes", "Steady ping", "Packet loss", "Server stalls")):
             cap = label(name, "muted")
             cap.setToolTip(tips[name])
             val = label("–", "big")
@@ -462,12 +462,14 @@ class PathCardWidget(QFrame):
         self.values["Spikes"].setText(ms(c.spikes_ms, "+{:.0f} ms"))
         self.values["Steady ping"].setText(ms(c.steady_pct, "{:.0f} %"))
         self.values["Steady ping"].setStyleSheet(f"color: {LEVEL_COLOURS[c.jumpy_level]}")
-        self.values["Stability"].setText(ms(c.stability_pct, "{:.0f} %"))
-        self.values["Loss"].setText(ms(c.loss_pct, "{:.2f} %"))
-        self.values["Stability"].setStyleSheet(f"color: {LEVEL_COLOURS[c.stability_level]}")
-        loss_level = ("unknown" if c.loss_pct is None else "good" if c.loss_pct < 0.1
-                      else "fair" if c.loss_pct < report.CAL_TCP_BAD_PCT else "poor")
-        self.values["Loss"].setStyleSheet(f"color: {LEVEL_COLOURS[loss_level]}")
+        loss = self.values["Packet loss"]
+        if c.judged_minutes:
+            share = "" if c.loss_pct is None else f" · {c.loss_pct:.2f} %"
+            loss.setText(f"{c.lossy_minutes} of {c.judged_minutes} min<br><span style='font-size: 9pt; "
+                         f"color: {THEME['muted']}'>{c.lost_packets} packets{share}</span>")
+        else:
+            loss.setText("–")
+        loss.setStyleSheet(f"color: {LEVEL_COLOURS[c.stability_level]}")
         self.values["Server stalls"].setText(ms(c.stalls_per_hour, "{:.0f} / h"))
         self.values["Server stalls"].setStyleSheet(f"color: {LEVEL_COLOURS[c.stall_level]}")
         self.values["Server stalls"].setToolTip(
@@ -1012,8 +1014,8 @@ class Window(QMainWindow):
             name, _itf = advice.path_title(best.path)
             rtt = f", ping {best.rtt_p50:.0f} ms" if best.rtt_p50 is not None else ""
             jumpy = f", ping steady in {best.steady_pct:.0f} % of minutes" if best.steady_pct is not None else ""
-            self.rec_sub.setText(f"Best VPN measured so far: {name} — {100 - 100 * best.bad_fraction:.0f} % "
-                                 f"stable{rtt}{jumpy}, {best.minutes} min. Full reasoning under History.")
+            self.rec_sub.setText(f"Best VPN measured so far: {name} — packets lost in {best.bad} of "
+                                 f"{best.minutes} min{rtt}{jumpy}. Full reasoning under History.")
         else:
             self.rec_sub.setText("Full reasoning under History.")
 

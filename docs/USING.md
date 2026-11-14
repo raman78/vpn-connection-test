@@ -82,8 +82,9 @@ desktop notification says so, once per change.
 │ │ Ping     32 ms   │ │ Ping     43 ms    │ │ Ping     45 ms   │  │
 │ │ Spikes   3 ms    │ │ Spikes   7 ms     │ │ Spikes   9 ms    │  │
 │ │ Steady ping 99 % │ │ Steady ping 92 %  │ │ Steady ping 71 % │  │
-│ │ Stability 90 %   │ │ Stability 100 %   │ │ Stability 100 %  │  │
-│ │ Loss     0.40 %  │ │ Loss     0.00 %   │ │ Loss     0.01 %  │  │
+│ │ Packet loss      │ │ Packet loss       │ │ Packet loss      │  │
+│ │  5 of 50 min     │ │  0 of 52 min      │ │  0 of 288 min    │  │
+│ │  200 pkts·0.40 % │ │  0 pkts · 0.00 %  │ │  3 pkts · 0.01 % │  │
 │ │ Server stalls 0/h│ │ Server stalls 1/h │ │ Server stalls –  │  │
 │ └──────────────────┘ └───────────────────┘ └──────────────────┘  │
 ├──────────────────────────────────────────────────────────────────┤
@@ -164,16 +165,16 @@ which servers a card includes; **Advanced** keeps each server apart.
 |---|---|
 | **Ping** | the usual round trip of the connection, in milliseconds |
 | **Spikes** | how far the ping jumps above its usual value at its worst moments (the worst 5 %) |
-| **Steady ping** | the share of minutes in which the ping did not jump; like Stability, more is better |
-| **Stability** | the share of minutes in which no noticeable packet loss happened |
-| **Loss** | lost packets out of all packets received |
+| **Steady ping** | the share of minutes in which the ping did not jump; more is better |
+| **Packet loss** | in how many of the measured minutes noticeable packet loss happened, and under it how many packets the server had to send again, and what share of all it sent that was |
 | **Server stalls** | how often per hour the game server stopped sending for a second or more while the connection itself kept answering; "–" for recordings made before stalls were counted |
 
-**★ Best** goes to the most stable path, judged by the colour of its
-Stability (green from 99 %, amber from 95 %, red below), not by the exact
-figure: 2 lost minutes in 1600 and none in 50 are equally stable, because
-50 minutes are too few to show a difference that small. Among equally
-stable paths the one with the steadier ping wins (Steady ping green from 95 %, amber from
+**★ Best** goes to the path with the least packet loss, judged by the
+colour of **Packet loss** (green when loss happened in at most 1 % of the
+minutes, amber up to 5 %, red above), not by the exact figure: 2 lossy
+minutes in 1600 and none in 50 count as equally good, because 50 minutes
+are too few to show a difference that small. Among paths of the same
+colour the one with the steadier ping wins (Steady ping green from 95 %, amber from
 80 %, red below), then the one with the lowest ping, because small loss
 below the noticeable level is not felt, while latency is felt all the
 time. The star appears only once at least two paths have enough data; a
@@ -189,7 +190,7 @@ bad.
 packets. A game server sends a steady stream of updates — AION 2 about
 three a second. When it lags, it stops sending for a second or more,
 while still confirming everything your game sends to it. Nothing is lost
-on the way, so Stability and Loss stay at 100 % and 0 %, and the ping is
+on the way, so Packet loss stays at zero, and the ping is
 only measured while data arrives — yet in the game everything freezes and
 then jumps. On 14 November 2026, when many players reported lag, the
 server did this about 45 times an hour, once for 7.5 seconds; on the days
