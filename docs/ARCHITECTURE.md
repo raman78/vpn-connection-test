@@ -518,18 +518,18 @@ the VPN servers.
 **★ Best** goes to one card, and only when at least two paths have
 `REC_MIN_SERVER_MINUTES` judged minutes (`advice.card_rank`): the best
 packet-loss **level** (`STABLE_PCT` 99 %, `SHAKY_PCT` 95 % of judged
-minutes without loss — the card's colours), not the exact value. The exact value put a VPN family with 0 bad
-minutes of 52 above the direct path with 2 of 1629 (99.9 %), although the
-direct path's ping was steadier and 11 ms lower, and the recommendation
-said to stay direct (measured 2026-11-12): 52 minutes cannot show a
-difference of 0.1 %. Among paths on the same level the steadier ping (by level of jumpy minutes: under
-`JUMPY_FAIR_PCT` 5 %, under `JUMPY_POOR_PCT` 20 %, or more — Steady ping
-95 % and over, 80 % and over, below), then the
-lowest ping (loss below the bad-minute threshold is not felt); loss only
-breaks a tie. The badge says which ("least packet loss", "as little
-loss, steadier ping" or "as little loss, lowest ping"). A path with fewer minutes says "Little data". Cards
-count only sessions with judged minutes on that path, the same basis as the
-recommendation.
+minutes without loss — the card's colours), not the exact value. The exact
+value put a VPN family with 0 bad minutes of 52 above the direct path with
+2 of 1629 (99.9 %), although the direct path's ping was steadier and 11 ms
+lower, and the recommendation said to stay direct (measured 2026-11-12): 52
+minutes cannot show a difference of 0.1 %. Among paths on the same level
+the steadier ping (by level of jumpy minutes: under `JUMPY_FAIR_PCT` 5 %,
+under `JUMPY_POOR_PCT` 20 %, or more — Steady ping 95 % and over, 80 % and
+over, below), then the lowest ping (loss below the bad-minute threshold is
+not felt); loss only breaks a tie. The badge says which ("least packet
+loss", "as little loss, steadier ping" or "as little loss, lowest ping"). A
+path with fewer minutes says "Little data". Cards count only sessions with
+judged minutes on that path, the same basis as the recommendation.
 
 Look: a fixed dark theme (`THEME`, `STYLE`, `apply_theme`: Fusion style,
 palette and one stylesheet), so the window is the same on any desktop
@@ -707,14 +707,14 @@ What each path did over the last 15 min, 1 h or 3 h of this session, from
 the window's in-memory history: per path (VPN servers by family) of the
 connection's own traffic, judged minutes, minutes with loss, jumpy minutes,
 server stalls with the longest (the line turns amber or red by stalls per
-hour, as on the cards) and ping; while on a VPN, the direct-path monitor's minutes, lost-ping
-minutes and minutes with a ping `SPIKE_MAX_MS` over the minute's median
-(raw ping, so a looser measure than the connection's smoothed RTT); the
-**Tunnel** line; the latest route verdict. Then one conclusion. When the
-server stalled `STALL_HINT_MIN` or more times on the path in use within
-the span, the conclusion adds so, and an "ok" conclusion becomes "stay"
-(amber): the connection was clean, the game was not (`recent_view` around
-`_recent_view`).
+hour, as on the cards) and ping; while on a VPN, the direct-path monitor's
+minutes, lost-ping minutes and minutes with a ping `SPIKE_MAX_MS` over the
+minute's median (raw ping, so a looser measure than the connection's
+smoothed RTT); the **Tunnel** line; the latest route verdict. Then one
+conclusion. When the server stalled `STALL_HINT_MIN` or more times on the
+path in use within the span, the conclusion adds so, and an "ok" conclusion
+becomes "stay" (amber): the connection was clean, the game was not
+(`recent_view` around `_recent_view`).
 
 The **Tunnel** line (`advice._tunnel_line`) counts the jumpy probe rounds
 (§8) to the VPN server through the tunnel (`vpn-gateway`) and outside it
@@ -739,9 +739,9 @@ The window receives every probe round as an `engine.ProbePoint` through
 | direct | 2+ minutes with loss | switch to the VPN, naming the best one so far |
 | direct | otherwise | stable (with the minutes the ping jumped, if any) |
 
-The RTT cost and the best VPN (`card_rank`) come from the cards (all sessions, the
-connection's own RTT on both paths): the monitor's ping RTT is not
-comparable with a TCP connection's RTT, which also counts delayed
+The RTT cost and the best VPN (`card_rank`) come from the cards (all
+sessions, the connection's own RTT on both paths): the monitor's ping RTT
+is not comparable with a TCP connection's RTT, which also counts delayed
 acknowledgements (measured: 17.5 ms ping against 32 ms TCP to the same
 server).
 

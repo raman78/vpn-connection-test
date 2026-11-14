@@ -104,8 +104,7 @@ reporting a problem. It has three views, switched at the top right:
   session, and the recommendation with its full reasoning;
 - **Advanced** — the numbers behind both (below).
 
-The window opens on the **overview** for one
-connection. When several
+The window opens on the **Overview** for one connection. When several
 programs are watched, it picks the busiest one with enough data; the
 drop-down list at the top switches between them.
 
@@ -174,11 +173,11 @@ colour of **Packet loss** (green when loss happened in at most 1 % of the
 minutes, amber up to 5 %, red above), not by the exact figure: 2 lossy
 minutes in 1600 and none in 50 count as equally good, because 50 minutes
 are too few to show a difference that small. Among paths of the same
-colour the one with the steadier ping wins (Steady ping green from 95 %, amber from
-80 %, red below), then the one with the lowest ping, because small loss
-below the noticeable level is not felt, while latency is felt all the
-time. The star appears only once at least two paths have enough data; a
-path without enough says "Little data".
+colour the one with the steadier ping wins (Steady ping green from 95 %,
+amber from 80 %, red below), then the one with the lowest ping, because
+small loss below the noticeable level is not felt, while latency is felt
+all the time. The star appears only once at least two paths have enough
+data; a path without enough says "Little data".
 
 On the **Overview** the cards count only what happened since you started
 the program — today's play, not last week's. **History** shows the same
@@ -188,18 +187,17 @@ bad.
 
 **Server stalls** is the one number that has nothing to do with lost
 packets. A game server sends a steady stream of updates — AION 2 about
-three a second. When it lags, it stops sending for a second or more,
-while still confirming everything your game sends to it. Nothing is lost
-on the way, so Packet loss stays at zero, and the ping is
-only measured while data arrives — yet in the game everything freezes and
-then jumps. On 14 November 2026, when many players reported lag, the
-server did this about 45 times an hour, once for 7.5 seconds; on the days
-before, about never. Green under 3 an hour, amber under 15, red above. The
-chart marks each minute with a stall in red at the top, with the count.
-Since the stall is on the server's side, changing the path is unlikely to
-help, and stalls do not decide the star or the recommendation. A loading
-screen can count as a stall too, if the server is quiet while your game
-keeps talking to it.
+three a second. When it lags, it stops sending for a second or more, while
+still confirming everything your game sends to it. Nothing is lost on the
+way, so Packet loss stays at zero, and the ping is only measured while
+data arrives — yet in the game everything freezes and then jumps. On 14
+November 2026, when many players reported lag, the server did this about
+45 times an hour, once for 7.5 seconds; on the days before, about never.
+Green under 3 an hour, amber under 15, red above. The chart marks each
+minute with a stall in red at the top, with the count. Since the stall is
+on the server's side, changing the path is unlikely to help, and stalls do
+not decide the star or the recommendation. A loading screen can count as a
+stall too, if the server is quiet while your game keeps talking to it.
 
 Why other tools, such as Questlog, may show bigger ping jumps: their ping
 is the game's own, which waits for the server's program to answer, so
@@ -227,9 +225,8 @@ going back to character select.
 
 Its headline is at the bottom of the **Overview**, and the whole of it,
 with the reasoning, under **History**. It is always drawn from all your
-recordings. It names a VPN server
-family, and says in how many minutes its ping was steady, next to your
-normal connection's:
+recordings. It names a VPN server family, and says in how many minutes its
+ping was steady, next to your normal connection's:
 
 | Recommendation | When |
 |---|---|
@@ -251,11 +248,12 @@ alarm do not count against your normal connection.
 
 ### Advanced
 
-**Advanced** shows everything behind the overview: the full comparison
-table (with each path's server stalls, and the short ones of half a
-second to a second, which are recorded but not yet judged), how reliable the background ping
-has proven, the reasoning behind the recommendation, the last probes and events, **Compare sessions…** to
-add older recordings, and **Session folder** with the log files.
+**Advanced** shows everything behind the other two views: the full
+comparison table (with each path's server stalls, and the short ones of
+half a second to a second, which are recorded but not yet judged), how
+reliable the background ping has proven, the reasoning behind the
+recommendation, the last probes and events, **Compare sessions…** to add
+older recordings, and **Session folder** with the log files.
 
 ## When it stutters
 
@@ -331,9 +329,12 @@ from minutes you play directly. Until then its findings stay provisional.
 
 **Why is the ping in "Recently" lower than on the cards?**
 They measure different things. The cards show the round trip of the
-program's own connection, which includes the server's delay in answering;
-the background ping is a bare echo. The latency cost of a VPN is therefore
-always taken from the cards, comparing like with like.
+program's own connection, which includes the time the server's machine
+takes to confirm what it received; the background ping is a bare echo.
+Neither waits for the game server's program, which is why lag on the
+server's side shows as **Server stalls**, not in either ping. The latency
+cost of a VPN is therefore always taken from the cards, comparing like
+with like.
 
 **Does it slow the game down?**
 No noticeable amount: one ping a second to the game's server, a short

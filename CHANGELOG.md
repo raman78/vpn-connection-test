@@ -9,7 +9,7 @@ What changed for users, release by release. Technical details are in
 - **Server stalls**: the program now notices when the game server stops
   sending for a second or more while the connection itself keeps
   answering — the lag many players feel at once, which loses no packet and
-  so never showed in Stability, Loss or the ping. It is a number on every
+  so never showed in the loss figures or the ping. It is a number on every
   card, red marks on the chart, and a line in **Recently** and the banner
   saying the lag is on the server's side. Shorter pauses, half a second to
   a second, are counted under **Advanced**.
@@ -34,7 +34,7 @@ What changed for users, release by release. Technical details are in
   to a dungeon. The program is now looked up again until it is known.
 - **★ Best** no longer goes to a VPN server tried only briefly just because
   it had no lost minute yet, while the direct path, recorded for hours, had
-  one or two. Paths with the same Stability colour count as equally stable,
+  one or two. Paths with the same Packet loss colour count as equally good,
   and the steadier, faster ping decides.
 
 ## [0.2.0] — 2026-11-10
