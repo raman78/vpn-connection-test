@@ -3,7 +3,7 @@
 What changed for users, release by release. Technical details are in
 `docs/ARCHITECTURE.md`.
 
-## [Unreleased]
+## [0.3.0] — 2026-11-15
 
 ### Added
 - **The game's own ping for AION 2**: the program now reads the game's
