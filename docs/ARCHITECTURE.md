@@ -241,9 +241,9 @@ the direct-path monitor's ping measures the network alone. A skipped
 pauses in those 6 minutes. `stalls_short` records them, apart from
 `stalls`, and is shown only in the report and the Advanced table until a
 normal evening shows how many are usual — the AION 2 server may skip
-single ticks on calm days too. Reading the game's ping reply directly
-would mean decoding the game's packets, which this tool does not do: it
-keeps only headers, and stays generic.
+single ticks on calm days too. The game's ping reply itself is read since
+2026-11-15, for AION 2 connections only, by decoding their stream (§4a);
+every other connection stays headers-only, and the core stays generic.
 
 A quiet minute is a row of zeros with `covered_s` 60, never a missing row;
 a minute the capture did not fully see has a smaller `covered_s`. A
