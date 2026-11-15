@@ -24,7 +24,12 @@ CAPTURE_MIN_SEGMENTS data segments in the last minute, busiest first, at
 most MAX_CAPTURED. A program's short HTTPS requests are watched (sampled)
 but not captured: a few packets say nothing about loss, and each would cost
 a capture process. Once captured, a connection stays captured until it
-closes or changes path.
+closes or changes path. A watched connection for which `capture_at_once`
+says so (the engine passes `capture.decoded`: the game's own port) is
+captured as soon as it is seen, without the age and traffic minimums: a
+game opens a new server connection at every instance, and its first
+seconds — connecting, loading — went unmeasured for CAPTURE_MIN_AGE_S each
+time (seen 2026-11-15 at four server switches in 24 minutes).
 """
 
 from __future__ import annotations
@@ -141,8 +146,10 @@ class Selection:
 
 
 class Tracker:
-    def __init__(self, selection: Selection, names: ProgramNames | None = None) -> None:
+    def __init__(self, selection: Selection, names: ProgramNames | None = None,
+                 capture_at_once=None) -> None:
         self.selection = selection
+        self.capture_at_once = capture_at_once or (lambda key: False)
         self.names = names or ProgramNames()
         self.conns: dict[tuple, Tracked] = {}
         self.skipped_local = 0
@@ -283,8 +290,8 @@ class Tracker:
         candidates = sorted(
             (t for t in self.conns.values()
              if t.watched and not t.captured
-             and now - t.opened_at >= CAPTURE_MIN_AGE_S
-             and t.rate(now) >= CAPTURE_MIN_SEGMENTS
+             and (self.capture_at_once(t.last.key)
+                  or (now - t.opened_at >= CAPTURE_MIN_AGE_S and t.rate(now) >= CAPTURE_MIN_SEGMENTS))
              and not t.path.interface.startswith(UNKNOWN_PATH_PREFIX)),
             key=lambda t: t.rate(now), reverse=True)
         for t in candidates[:max(0, MAX_CAPTURED - len(current))]:

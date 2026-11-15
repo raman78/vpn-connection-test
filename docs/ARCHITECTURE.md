@@ -129,6 +129,13 @@ for `vpnct-gui` alone); the measuring is done by `ss`, `ip`,
    `CAPTURE_MIN_SEGMENTS` (10) data segments in the last minute, busiest
    first, at most `MAX_CAPTURED` (8). A program's short HTTPS requests are
    sampled but not captured — a handful of packets says nothing about loss.
+   The exception is a decoded game connection (§4a): it is captured as
+   soon as it is watched, with no minimum age or traffic
+   (`Tracker.capture_at_once`, given `capture.decoded`). AION 2 opens a new
+   server connection at every instance. With the 10 s minimum, the first
+   seconds of each one (connecting, loading) were never captured: four
+   times in 24 minutes on 2026-11-15. Since a sample is taken once a
+   second, at most about one second of a new connection is now missed.
    Once captured, a connection stays captured until it closes or its
    address disappears.
 7. **Keep the captures in step** (§4) and write any finished minutes.
@@ -295,7 +302,14 @@ clocks. `GameConnection` keeps the median of the last `OFFSET_SAMPLES`
 
 Over 28 pairs the offset varied by ±1.2 ms, which is the game clock's 1 ms
 step, and drifted 1.7 ms over five minutes; the window follows the drift.
-The median is why a wrong pair cannot move it. A reply packed into a
+The median is why a wrong pair cannot move it. The clock belongs to the
+game process, not to a server, so a new server connection is seeded with
+the offsets of the last calibrated one (`CaptureManager._clock_offsets`,
+`GameConnection.seed`). Once its first pair agrees with them within
+`SEED_AGREE_MS` (5 ms), its pings count from the first reply instead of
+after three pairs, about 30 s in. A first pair that disagrees means the
+game was restarted, and the seed is dropped: a wrong ping would be
+written, and a late one is only late. A reply packed into a
 bundle is still measured (2 of 59 were), because the ping comes from the
 reply's own field and not from pairing.
 

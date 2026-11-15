@@ -22,7 +22,7 @@ import time
 from dataclasses import dataclass, field
 
 from . import __version__, interfaces, probes, ss
-from .capture import CaptureManager, MinuteRow
+from .capture import CaptureManager, MinuteRow, decoded
 from .monitor import MONITOR_MAX_TARGETS, MonitorManager, MonitorMinute
 from .report import CAL_PING_BAD_PCT, PROBE_SPIKE_MS
 from .interfaces import NetPath, PathMap
@@ -177,7 +177,7 @@ class Engine:
             "probe_period_s": PROBE_PERIOD_S,
             "trace_period_s": TRACE_PERIOD_S,
         }, self.started, session_root)
-        self.tracker = Tracker(selection)
+        self.tracker = Tracker(selection, capture_at_once=decoded)
         self.captures = CaptureManager(self._capture_event)
         self.monitors = MonitorManager(self._capture_event)
         self._default_devs: set[str] = set()

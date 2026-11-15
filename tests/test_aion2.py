@@ -240,3 +240,26 @@ class GameConnectionTests(unittest.TestCase):
         g.add(1.0, True, len(data), 0, data)
         self.assertEqual(g.take()[1], [(1.0, 1010)])
         self.assertEqual(g.take()[1], [])
+
+
+class SeedTests(unittest.TestCase):
+    """A new server connection of the same game, with the previous one's offsets."""
+    OFFSET = 5000
+
+    def _first_reply(self, seed):
+        g, t = aion2.GameConnection(seed=seed), 1_800_000_001.0
+        g.add(1_800_000_000.0, True, len(START), 0, START)
+        g.add(t, False, aion2.REQUEST_LEN, None, None)
+        reply = ping(round(t * 1000) - self.OFFSET)
+        g.add(t + 0.030, True, len(reply), len(START), reply)
+        return [ms for _, ms in g.take()[0]]
+
+    def test_agreeing_seed_gives_a_ping_from_the_first_reply(self):
+        self.assertEqual(self._first_reply([float(self.OFFSET)] * 5), [30.0])
+
+    def test_disagreeing_seed_is_dropped(self):
+        # The game was restarted: its clock moved by 200 ms.
+        self.assertEqual(self._first_reply([float(self.OFFSET + 200)] * 5), [])
+
+    def test_without_seed_the_first_reply_waits(self):
+        self.assertEqual(self._first_reply(None), [])

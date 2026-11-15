@@ -38,6 +38,11 @@ What changed for users, release by release. Technical details are in
   of all.
 
 ### Fixed
+- The first 10 seconds of every new game server connection (each dungeon
+  or instance) were not measured, because the program waited that long
+  before capturing any connection. The game's own connections are now
+  captured as soon as they appear, and their ping counts from the first
+  reply.
 - A game connection could go unmeasured for its whole life when the
   system listed it for a moment without its program, as happens at a switch
   to a dungeon. The program is now looked up again until it is known.

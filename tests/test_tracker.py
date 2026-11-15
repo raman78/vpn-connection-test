@@ -155,6 +155,12 @@ class CaptureSelectionTests(unittest.TestCase):
         self.t.update([replace(s, data_segs_in=CAPTURE_MIN_SEGMENTS)], PATHS, now=later)
         self.assertEqual([c.last.key for c in self.t.select_captured(later)], [s.key])
 
+    def test_game_connection_is_captured_at_once(self):
+        t = Tracker(Selection(programs=["game.exe"]), Names(), capture_at_once=lambda k: k[3] == 13328)
+        game, https = sock(), sock(rport=443, lport=40001)
+        t.update([game, https], PATHS, now=0)
+        self.assertEqual([c.last.key for c in t.select_captured(0)], [game.key])
+
     def test_lasting_idle_connection_is_not_captured(self):
         s = sock()
         self.t.update([s], PATHS, now=0)

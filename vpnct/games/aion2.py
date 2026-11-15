@@ -29,6 +29,11 @@ median over the last OFFSET_SAMPLES pairs, so a pair matched wrongly (a
 reply packed in a bundle, after which the next request is paired with the
 wrong reply) cannot move it; every reply then gets a ping, arrival minus
 the request's time on our clock — the same value Questlog shows, to 2 ms.
+The clock belongs to the game process, not to a server, so a new server
+connection starts from the previous connection's offsets (`seed`), once
+its first pair agrees with them within SEED_AGREE_MS; then its pings count
+from the first reply, not after OFFSET_MIN pairs. A first pair that
+disagrees (the game was restarted) drops the seed.
 """
 
 from __future__ import annotations
@@ -272,6 +277,7 @@ REQUEST_LEN = 12            # the game's ping request, one data packet (measured
 PAIR_MAX_S = 10.0           # a reply this long after a request is not paired with it
 OFFSET_SAMPLES = 15         # pairs the clock offset is the median of
 OFFSET_MIN = 3              # pairs needed before any ping is reported
+SEED_AGREE_MS = 5.0         # a new connection's first pair must agree with the seed this well
 MAX_PENDING_SEGMENTS = 200  # out-of-order segments held before giving the gap up
 SEQ_MOD = 1 << 32
 
@@ -289,6 +295,7 @@ class GameConnection:
     pings: list = field(default_factory=list)          # (arrival, ms), not yet taken
     maps: list = field(default_factory=list)           # (arrival, map id), not yet taken
     gaps: int = 0                                      # capture gaps given up on
+    seed: list | None = None                           # offsets carried over, until a pair confirms them
 
     def add(self, time: float, from_remote: bool, length: int, seq: int | None,
             payload: bytes | None) -> None:
@@ -328,7 +335,12 @@ class GameConnection:
         req = next((r for r in reversed(self.requests) if r[0] < m.at), None)
         if req is not None and not req[1] and m.at - req[0] <= PAIR_MAX_S:
             req[1] = True
-            self.offsets.append(req[0] * 1000 - m.value)
+            sample = req[0] * 1000 - m.value
+            if self.seed:
+                if abs(sample - statistics.median(self.seed)) <= SEED_AGREE_MS:
+                    self.offsets.extend(self.seed)
+                self.seed = None
+            self.offsets.append(sample)
         self.unresolved.append((m.at, m.value))
         if len(self.offsets) >= OFFSET_MIN:
             offset = statistics.median(self.offsets)

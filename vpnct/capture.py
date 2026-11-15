@@ -315,6 +315,7 @@ class CaptureManager:
         self._last_failure: dict[Key, float] = {}
         self._decoder_said: dict[int, str] = {}     # pipeline id -> decoder state last reported
         self._resyncs_said: dict[int, int] = {}
+        self._clock_offsets: list = []              # the game clock's offsets, newest calibrated connection
 
     def update(self, wanted: dict[Key, str], now: float) -> None:
         """`wanted`: connection -> the interface it runs on."""
@@ -338,7 +339,8 @@ class CaptureManager:
     def _start(self, itf: str, key: Key, now: float) -> None:
         keys = frozenset({key})
         decode = decoded(key)
-        pipe = Pipeline(itf, keys, started=now, game=aion2.GameConnection() if decode else None)
+        game = aion2.GameConnection(seed=list(self._clock_offsets) or None) if decode else None
+        pipe = Pipeline(itf, keys, started=now, game=game)
         try:
             dc = subprocess.Popen(dumpcap_command(itf, keys, decode), stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE)
@@ -414,6 +416,8 @@ class CaptureManager:
                 continue
             (key,) = pipe.keys
             p, m = pipe.take_game()
+            if len(pipe.game.offsets) >= aion2.OFFSET_MIN:
+                self._clock_offsets = list(pipe.game.offsets)
             pings += [(key, at, ms) for _, _, at, ms in p]
             maps += [(key, at, map_id) for at, map_id in m]
             state = pipe.decoder_state()
