@@ -18,11 +18,11 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq tshark
           sudo setcap cap_net_raw,cap_net_admin+eip "$(command -v dumpcap)"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0     # hatch-vcs reads the version from the tags
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
