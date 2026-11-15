@@ -40,7 +40,7 @@ from PyQt6.QtWidgets import (QAbstractItemView, QApplication, QButtonGroup, QCom
 
 from . import __version__, advice, config, report
 from .cli import MARK_SIGNAL, claim_pidfile, release_pidfile
-from .engine import Engine, MinutePoint, ProbePoint, RouteResult, SecondPoint
+from .engine import Engine, GamePingPoint, MinutePoint, ProbePoint, RouteResult, SecondPoint
 from .monitor import MonitorMinute
 from .session import sessions_root
 from .tracker import Selection
@@ -62,6 +62,7 @@ THEME = {
     "good": GREEN, "warn": YELLOW, "bad": RED, "idle": GREY,
     "good_bg": "#0f2a1d", "warn_bg": "#2e2210", "bad_bg": "#321317", "info_bg": "#11233f",
     "idle_bg": "#151d2e",
+    "game": "#e879f9",          # the game's own ping on the chart
 }
 DIRECT_SHADE = QColor(148, 163, 184, 30)
 VPN_SHADES = [QColor(59, 130, 246, 44), QColor(168, 85, 247, 44), QColor(20, 184, 166, 44),
@@ -136,6 +137,7 @@ class Store:
     def __init__(self) -> None:
         self.seconds: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=HISTORY_S * 4))
         self.minutes: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=HISTORY_S // 60 * 10))
+        self.game: dict[tuple, deque] = defaultdict(lambda: deque(maxlen=HISTORY_S // 10 * 4))
         self.traffic: dict[tuple, int] = defaultdict(int)
         self.monitor: deque = deque(maxlen=HISTORY_S // 60 * 8)
         self.hosts: dict[tuple, set] = defaultdict(set)
@@ -160,6 +162,8 @@ class Store:
             elif isinstance(pt, MinutePoint):
                 self.minutes[key].append(pt)
                 self.hosts[key].add(pt.host)
+            elif isinstance(pt, GamePingPoint):
+                self.game[key].append(pt)
 
     def routes_for(self, key: tuple) -> list[RouteResult]:
         hosts = self.hosts.get(key, set())
@@ -200,11 +204,12 @@ class Chart(QWidget):
         self.setMinimumHeight(220)
         self.seconds: list[SecondPoint] = []
         self.minutes: list[MinutePoint] = []
+        self.game: list[GamePingPoint] = []
         self.span = SPANS[1][1]
         self.colours: dict[str, QColor] = {}
 
-    def set_data(self, seconds, minutes) -> None:
-        self.seconds, self.minutes = list(seconds), list(minutes)
+    def set_data(self, seconds, minutes, game=()) -> None:
+        self.seconds, self.minutes, self.game = list(seconds), list(minutes), list(game)
         self.update()
 
     def colour(self, path: str, is_vpn: bool) -> QColor:
@@ -228,6 +233,7 @@ class Chart(QWidget):
         x = lambda t: plot.left() + (t - t0) / self.span * plot.width()
         secs = [s for s in self.seconds if s.time >= t0]
         mins = [m for m in self.minutes if m.minute + 60 >= t0]
+        game = [g for g in self.game if g.time >= t0]
         small = QFont(self.font())
         small.setPointSizeF(small.pointSizeF() * 0.85)
         p.setFont(small)
@@ -255,7 +261,7 @@ class Chart(QWidget):
             if s.rtt_ms is not None and s.d_data_segs_in > 0:
                 per_second[int(s.time)].append(s.rtt_ms)
         pts = sorted((t, sorted(v)[len(v) // 2]) for t, v in per_second.items())
-        rtt_max = max([v for _, v in pts] + [10.0]) * 1.15
+        rtt_max = max([v for _, v in pts] + [g.ping_ms for g in game] + [10.0]) * 1.15
         p.setPen(QPen(grid, 1))
         for frac in (0.0, 0.5, 1.0):
             y = rtt_area.bottom() - frac * rtt_area.height()
@@ -265,8 +271,8 @@ class Chart(QWidget):
             y = rtt_area.bottom() - frac * rtt_area.height()
             p.drawText(QRectF(0, y - 8, left - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                        f"{rtt_max * frac:.0f}")
-        p.drawText(QRectF(plot.left() + 4, rtt_area.top() + 2, 420, 16), Qt.AlignmentFlag.AlignLeft,
-                   "Ping [ms] · red marks: server stalls per minute")
+        p.drawText(QRectF(plot.left() + 4, rtt_area.top() + 2, 640, 16), Qt.AlignmentFlag.AlignLeft,
+                   "Ping [ms] · dots: game ping · red marks: server stalls per minute · grey: loading")
         if pts:
             path = QPainterPath()
             for i, (t, v) in enumerate(pts):
@@ -275,6 +281,12 @@ class Chart(QWidget):
             p.setPen(QPen(QColor(THEME["accent"]), 1.8, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap,
                           Qt.PenJoinStyle.RoundJoin))
             p.drawPath(path)
+        # the game's own ping (one reply every 10 s): dots, not a line
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(THEME["game"]))
+        for g in game:
+            p.drawEllipse(QPointF(x(g.time), rtt_area.bottom() - g.ping_ms / rtt_max * rtt_area.height()),
+                          2.6, 2.6)
 
         # lost packets (server retransmissions) per minute
         per_min: dict[float, list[int]] = defaultdict(lambda: [0, 0, 0])
@@ -319,6 +331,17 @@ class Chart(QWidget):
                 p.setPen(QColor(THEME["bad"]))
                 p.drawText(QRectF(x0, rtt_area.top() + 5, x1 - x0, 14), Qt.AlignmentFlag.AlignCenter,
                            str(n))
+
+        # loading screens (map entries): a grey mark per minute; their
+        # stalls are not among the red ones
+        for m in mins:
+            if not m.map_entries:
+                continue
+            x0, x1 = x(max(m.minute, t0)), x(m.minute + 60)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(muted)
+            p.drawRoundedRect(QRectF(x0 + 1.5, rtt_area.top() + (20 if stalls.get(m.minute) else 0),
+                                     max(1.0, x1 - x0 - 3), 3), 1.5, 1.5)
 
         # time axis and legend
         p.setPen(muted)
@@ -402,7 +425,8 @@ LEVEL_COLOURS = {"good": THEME["good"], "fair": THEME["warn"], "poor": THEME["ba
 
 
 class PathCardWidget(QFrame):
-    """One tested path: ping, spikes, jumpy minutes, packet loss, server stalls, how much data."""
+    """One tested path: ping, spikes, jumpy minutes, packet loss, server stalls, the game's
+    own ping, how much data."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -437,8 +461,13 @@ class PathCardWidget(QFrame):
             "Server stalls": "Pauses of a second or more in the game server's data while the connection "
                              "kept answering, per hour measured. The server lagged; nothing was lost on "
                              "the way, so Packet loss does not show it.",
+            "Game ping": "The game's own ping, the one Questlog shows: how long the game server took "
+                         "to answer the game's ping, sent every 10 s. Median, and below how far it rises "
+                         "at its worst moments (95th percentile minus median). It includes the server's "
+                         "own answer time, which Ping does not. Read from AION 2's connections only.",
         }
-        for i, name in enumerate(("Ping", "Spikes", "Steady ping", "Packet loss", "Server stalls")):
+        for i, name in enumerate(("Ping", "Spikes", "Steady ping", "Packet loss", "Server stalls",
+                                  "Game ping")):
             cap = label(name, "muted")
             cap.setToolTip(tips[name])
             val = label("–", "big")
@@ -476,6 +505,16 @@ class PathCardWidget(QFrame):
             (f"Longest {c.stall_max_s:.1f} s, over {c.stall_minutes} measured minutes. "
              if c.stall_minutes else "Not measured: recorded before stalls were counted. ")
             + "Pauses of a second or more in the game server's data while the connection kept answering.")
+        game = self.values["Game ping"]
+        if c.game_ping_ms is not None:
+            game.setText(f"{c.game_ping_ms:.0f} ms<br><span style='font-size: 9pt; color: {THEME['muted']}'>"
+                         f"spikes +{c.game_spikes_ms:.0f} ms</span>")
+            game.setToolTip(f"{c.game_pings} game pings. The game's own ping, the one Questlog shows: "
+                            "the game server's answer time, network included.")
+        else:
+            game.setText("–")
+            game.setToolTip("Not measured: the game's ping is read only from AION 2's connections, "
+                            "and only in recordings since the program learned it.")
         sessions = f" · {c.sessions} session{'s' if c.sessions != 1 else ''}"
         if c.enough:
             self.footer.setText(f"{c.judged_minutes} min measured{sessions}")
@@ -549,6 +588,10 @@ class Window(QMainWindow):
                                      if g.stall_minutes else "not measured")),
         ("short stalls (0.5–1 s)", lambda g: report._n(g.short_stalls_per_hour, "{:.0f} / h")
                                              if g.short_stalls_per_hour is not None else "not measured"),
+        ("game ping (median / p95)", lambda g: (f"{g.game_ping_ms:.0f} / {report.percentile(g.game_pings, .95):.0f} ms"
+                                                f" ({len(g.game_pings)})" if g.game_pings else "not measured")),
+        ("loading screens (stalls)", lambda g: (f"{g.map_entries} ({g.loading_stalls})"
+                                                if g.map_entries or g.loading_stalls else "–")),
     ]
     BANNER = {  # level -> (background, accent, title)
         "switch": (THEME["bad_bg"], THEME["bad"], "Losing packets — switch to the VPN"),
@@ -830,7 +873,8 @@ class Window(QMainWindow):
         if key is None:
             self.chart.set_data([], [])
             return
-        self.chart.set_data(self.store.seconds.get(key, []), self.store.minutes.get(key, []))
+        self.chart.set_data(self.store.seconds.get(key, []), self.store.minutes.get(key, []),
+                            self.store.game.get(key, []))
 
     def path_now(self, snap) -> tuple[str | None, float | None]:
         """(path, RTT) of the chosen service's busiest live connection."""

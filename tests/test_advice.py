@@ -497,6 +497,22 @@ class StallTests(unittest.TestCase):
         self.assertEqual(c["VPN · X"].stall_level, "poor")
         self.assertEqual(c["VPN · X"].stall_minutes, 20)
 
+    def test_game_ping_on_the_card_does_not_change_the_star(self):
+        from vpnct.report import by_service
+        rows = [loss(f"d{m}", 0) for m in range(20)] + [loss(f"v{m}", 0, "vpn:wg0 [X]", "wg0") for m in range(20)]
+        game = [{"time": f"t{i}", "program": "GAME.exe", "local": "192.0.2.20:1",
+                 "remote": "203.0.113.10:13328", "path": "vpn:wg0 [X]", "ping_ms": 25} for i in range(5)]
+        with tempfile.TemporaryDirectory() as tmp:
+            write_session(Path(tmp) / "a", {"losses.csv": rows})
+            write_session(Path(tmp) / "b", {"losses.csv": [], "game_ping.csv": game})
+            s = summarise([Path(tmp) / "a"])
+            s2 = summarise([Path(tmp) / "a", Path(tmp) / "b"])
+        before = {x.title: x for x in advice.path_cards(by_service(s["groups"])[("GAME.exe", "13328")])}
+        after = {x.title: x for x in advice.path_cards(by_service(s2["groups"])[("GAME.exe", "13328")])}
+        self.assertEqual((after["VPN · X"].game_ping_ms, after["VPN · X"].game_pings), (25, 5))
+        self.assertIsNone(after["Direct"].game_ping_ms)
+        self.assertEqual([t for t, c in before.items() if c.best], [t for t, c in after.items() if c.best])
+
     def test_short_stalls_per_hour_and_rows_without_the_column(self):
         from vpnct.report import by_service
         first = [dict(loss(f"a{m}", 0), stalls=0, stall_s=0, stall_max_s=0, silent=0)

@@ -147,3 +147,33 @@ class ProbeJumpTests(unittest.TestCase):
             write_session(d, {"probes.csv": [probe(34, 36), probe(34, 91), probe(34, 53.9)]})
             pg = summarise([d])["probes"][("10.2.0.1", "vpn-gateway(wg0)", "vpn:wg0 [X]", "yes")]
         self.assertEqual((pg.timed, pg.jumpy), (3, 1))
+
+
+class GamePingTests(unittest.TestCase):
+    def _summary(self, with_game):
+        game = [{"time": f"t{i}", "program": "GAME.exe", "local": "192.0.2.20:1",
+                 "remote": "203.0.113.10:13328", "path": "direct:eth0", "ping_ms": ms}
+                for i, ms in enumerate([27, 28, 28, 29, 30, 31, 80])]
+        row = loss("m1", "192.0.2.20:1", 60, 100, 0)
+        if with_game:
+            row.update(stalls=0, stall_s=0, stall_max_s=0, silent=0, stalls_short=0,
+                       stalls_loading=1, map_entries=2)
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp) / "s1"
+            write_session(d, {"losses.csv": [row], "game_ping.csv": game if with_game else []})
+            s = summarise([d])
+            text = format_report(s)
+        (g,) = s["groups"].values()
+        return g, text
+
+    def test_game_ping_median_spikes_and_loading(self):
+        g, text = self._summary(True)
+        self.assertEqual(g.game_ping_ms, 29)
+        self.assertAlmostEqual(g.game_spikes_ms, 65.3 - 29, places=1)
+        self.assertEqual((g.map_entries, g.loading_stalls), (2, 1))
+        self.assertIn(" 2/1", text.splitlines()[6])
+
+    def test_without_game_pings_it_is_not_measured(self):
+        g, _ = self._summary(False)
+        self.assertIsNone(g.game_ping_ms)
+        self.assertIsNone(g.game_spikes_ms)

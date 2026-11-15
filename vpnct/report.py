@@ -17,7 +17,11 @@ Numbers and where they come from:
 - server stalls: pauses in the remote end's data while the connection kept
   answering (`losses.csv` columns stalls..silent, capture.STALL_MIN_S);
   sessions recorded before these columns existed count as not measured,
-  never as stall-free;
+  never as stall-free; stalls at a loading screen are in stalls_loading,
+  apart;
+- game ping: the game's own ping replies (`game_ping.csv`, decoded AION 2
+  connections, docs/ARCHITECTURE.md §4a) — median and p95 minus median,
+  the same measures as for the kernel RTT;
 - probes and hops: ping results per target and path (`probes.csv`,
   `hops.csv`);
 - direct-path monitor (`monitor.csv`): per target and minute, ping loss on
@@ -199,6 +203,20 @@ class Group:
     minute_tcp: dict = field(default_factory=dict)      # (session, minute) -> MinuteAgg
     minute_rtt: dict = field(default_factory=dict)      # (session, minute) -> RttMinute
     members: set = field(default_factory=set)           # paths merged into this group (by_family)
+    game_pings: list = field(default_factory=list)      # the game's own ping, ms (game_ping.csv)
+    loading_stalls: int = 0                             # stalls at a map entry (losses.csv stalls_loading)
+    map_entries: int = 0
+
+    @property
+    def game_ping_ms(self) -> float | None:
+        return percentile(self.game_pings, .5)
+
+    @property
+    def game_spikes_ms(self) -> float | None:
+        """How far the game's ping rises above its usual value at its worst
+        moments (p95 minus median), as Spikes does for the RTT."""
+        p50, p95 = percentile(self.game_pings, .5), percentile(self.game_pings, .95)
+        return None if p50 is None else p95 - p50
 
     @property
     def ping_minutes(self) -> int:
@@ -480,6 +498,10 @@ def summarise(session_dirs: list[Path]) -> dict:
             g.minute_tcp.setdefault((d.name, r["minute"]), MinuteAgg()).add(
                 r["local"], data, rtx, float(r["covered_s"]), *_stall_columns(r))
             g.connections.add((d.name, r["local"], r["remote"]))
+            g.loading_stalls += int(r.get("stalls_loading") or 0)
+            g.map_entries += int(r.get("map_entries") or 0)
+        for r in _read(d / "game_ping.csv"):
+            groups[(r["program"], _port(r["remote"]), r["path"])].game_pings.append(float(r["ping_ms"]))
         for r in _read(d / "probes.csv"):
             key = (r["target"], r["role"], r["path"], r["bound"])
             pg = probe_groups[key]
@@ -604,6 +626,9 @@ def merge_groups(groups: list[Group]) -> Group:
             out.minute_tcp.setdefault(k, MinuteAgg()).merge(m)
         for k, m in g.minute_rtt.items():
             out.minute_rtt.setdefault(k, RttMinute()).merge(m)
+        out.game_pings += g.game_pings
+        out.loading_stalls += g.loading_stalls
+        out.map_entries += g.map_entries
     return out
 
 
@@ -631,11 +656,13 @@ def format_report(summary: dict) -> str:
     out.append(f"RTT p95 >= {SPIKE_SPREAD_MS:.0f} ms or one second >= {SPIKE_MAX_MS:.0f} ms over the minute's median, "
                f"of the minutes with >= {SPIKE_MIN_SECONDS} s of data;")
     out.append("'stalls/h' = pauses of 1 s or more in the server's data while the connection kept answering, "
-               "per hour measured; 'short/h' = such pauses of 0.5 to 1 s; '-' = not measured)")
+               "per hour measured; 'short/h' = such pauses of 0.5 to 1 s; '-' = not measured;")
+    out.append("'game p50/p95' = the game's own ping (AION 2 only); 'loading' = loading screens, "
+               "and the stalls at them, which are not in stalls/h)")
     header = (f"{'program':<20} {'port':>6}  {'path':<36} {'time':>7} {'conns':>5} "
               f"{'RTT p50':>8} {'RTT p95':>8} {'captured':>9} {'data pkts':>9} "
               f"{'retrans':>7} {'loss %':>7} {'rtx/min':>7} {'gaps':>5} {'worst min %':>11} {'jumpy min':>9} "
-              f"{'stalls/h':>8} {'longest':>7} {'short/h':>7}")
+              f"{'stalls/h':>8} {'longest':>7} {'short/h':>7} {'game p50':>8} {'game p95':>8} {'loading':>9}")
     out.append(header)
     out.append("-" * len(header))
     for (program, port, path), g in sorted(groups.items()):
@@ -649,7 +676,9 @@ def format_report(summary: dict) -> str:
             f"{_n(per_min, '{:.2f}'):>7} {g.lost_gaps:>5} {g.worst_minute_pct:>11.1f} "
             f"{f'{g.spiky_minutes}/{g.ping_minutes}':>9} "
             f"{_n(g.stalls_per_hour):>8} {(f'{g.stall_max_s:.1f}s' if g.stall_minutes else '-'):>7} "
-            f"{_n(g.short_stalls_per_hour):>7}")
+            f"{_n(g.short_stalls_per_hour):>7} {_n(g.game_ping_ms):>8} "
+            f"{_n(percentile(g.game_pings, .95)):>8} "
+            f"{(f'{g.map_entries}/{g.loading_stalls}' if g.map_entries or g.loading_stalls else '-'):>9}")
     if not groups:
         out.append("(no watched connections recorded)")
     out.append("")

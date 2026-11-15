@@ -531,6 +531,9 @@ second and each captured minute once.
   minutes recorded with stall counting (`Group.stalls_per_hour`,
   `MinuteAgg.stall_judged`); `-` when none was. **short/h** — short stalls
   (`stalls_short`) the same way (`Group.short_stalls_per_hour`).
+- **game p50/p95** — the game's own ping (§4a) from `game_ping.csv`;
+  **loading** — map entries / stalls at them (`stalls_loading`), which are
+  not in stalls/h. `-` where nothing was decoded.
 - **loss %** — remote retransmissions per captured data packet;
   **rtx/min** — per captured minute; **worst min %** — the worst single
   minute with at least 50 data packets.
@@ -616,7 +619,8 @@ Card numbers:
 | Spikes | RTT p95 minus median — how far the ping jumps above usual | `Group.rtts` |
 | Steady ping | minutes in which the ping did not jump, of those with enough seconds (§10); shown this way round so that more is better | `Group.ping_minutes`, `spiky_minutes` |
 | Packet loss | bad minutes (§10) "of" judged minutes; under it, remote retransmissions and their share of captured data packets. Coloured by `PathCard.stability_level` on the share of judged minutes that were not bad. Called "Stability" until 2026-11-14 and shown as that share, with Loss as a separate number; Raman asked for a name that says what is counted, next to Steady ping and Server stalls | `Group.judged_minutes`, `bad_minutes`, `retrans`, `report.loss_pct` |
-| Server stalls | stalls (§4) per measured hour; green under `STALLS_FAIR_PER_H` (3), amber under `STALLS_POOR_PER_H` (15), red above — set from about 0/h on normal evenings and about 45/h on 2026-11-14; `–` when not measured. Not part of ★: a stall on the server's side is not a property of the path | `Group.stalls_per_hour`, `stall_max_s` |
+| Server stalls | stalls (§4) per measured hour; green under `STALLS_FAIR_PER_H` (3), amber under `STALLS_POOR_PER_H` (15), red above — set from about 0/h on normal evenings and about 45/h on 2026-11-14; `–` when not measured. Not part of ★: a stall on the server's side is not a property of the path. Stalls at a loading screen (§4a) are not in it | `Group.stalls_per_hour`, `stall_max_s` |
+| Game ping | the game's own ping (§4a), median; under it p95 minus median, as Spikes is for the RTT. `–` for connections that are not decoded and for recordings before 2026-11-15. Not part of ★ or the recommendation: it includes the server's answer time, which no path choice changes, and it has no thresholds yet | `Group.game_pings`, `game_ping_ms`, `game_spikes_ms` |
 
 "Spikes" is not the kernel's `rttvar`. Measured on the AION 2 recordings
 (2026-11-09): `rttvar` had a median of 12–16 ms on every path, including the
@@ -646,7 +650,12 @@ palette and one stylesheet), so the window is the same on any desktop
 theme; the chart is painted with the same colours. The chart marks every
 minute with a server stall (§4) in red at the top of the ping area, with
 the count: a stall loses nothing, so it leaves no bar, and the ping line
-only has points for seconds with data.
+only has points for seconds with data. The game's own ping (§4a) is drawn
+as dots, one per reply, because it comes every 10 s and a line between
+the replies would suggest values nobody measured. A minute with a map
+entry gets a grey mark at the top (below the stall count, when there is
+one): its stalls are loading, not counted in the red marks. The live
+points come from the engine as `GamePingPoint`s into `Store.game`.
 
 - **Settings**: command-line options as for `vpnct record`; without them,
   `config.toml` (`vpnct/config.py`: `programs`, `ports`, `targets`). An

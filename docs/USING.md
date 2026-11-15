@@ -86,9 +86,10 @@ desktop notification says so, once per change.
 │ │  5 of 50 min     │ │  0 of 52 min      │ │  0 of 288 min    │  │
 │ │  200 pkts·0.40 % │ │  0 pkts · 0.00 %  │ │  3 pkts · 0.01 % │  │
 │ │ Server stalls 0/h│ │ Server stalls 1/h │ │ Server stalls –  │  │
+│ │ Game ping 28 ms  │ │ Game ping 41 ms   │ │ Game ping –      │  │
 │ └──────────────────┘ └───────────────────┘ └──────────────────┘  │
 ├──────────────────────────────────────────────────────────────────┤
-│ [ chart: ping, server stalls, lost packets; path in use behind ]│
+│ [ chart: ping, game ping, stalls, loading, lost packets; path ]  │
 ├──────────────────────────────────────────────────────────────────┤
 │ Use the VPN only when the direct path is losing: …               │
 └──────────────────────────────────────────────────────────────────┘
@@ -167,6 +168,7 @@ which servers a card includes; **Advanced** keeps each server apart.
 | **Steady ping** | the share of minutes in which the ping did not jump; more is better |
 | **Packet loss** | in how many of the measured minutes noticeable packet loss happened, and under it how many packets the server had to send again, and what share of all it sent that was |
 | **Server stalls** | how often per hour the game server stopped sending for a second or more while the connection itself kept answering; "–" for recordings made before stalls were counted |
+| **Game ping** | the game's own ping, the one Questlog shows: how long the game server took to answer the game, every 10 seconds; under it, how far it rises at its worst moments. AION 2 only; "–" for other programs and older recordings |
 
 **★ Best** goes to the path with the least packet loss, judged by the
 colour of **Packet loss** (green when loss happened in at most 1 % of the
@@ -196,15 +198,27 @@ November 2026, when many players reported lag, the server did this about
 Green under 3 an hour, amber under 15, red above. The chart marks each
 minute with a stall in red at the top, with the count. Since the stall is
 on the server's side, changing the path is unlikely to help, and stalls do
-not decide the star or the recommendation. A loading screen can count as a
-stall too, if the server is quiet while your game keeps talking to it.
+not decide the star or the recommendation. For AION 2 the program knows
+when a loading screen starts, and a pause around it is counted as loading,
+not as a stall: the chart marks it in grey at the top.
 
-Why other tools, such as Questlog, may show bigger ping jumps: their ping
-is the game's own, which waits for the server's program to answer, so
-every short stall shows in it. The cards' **Ping** measures the
-connection, which stays steady while the server lags. Pauses of half a
-second to a second are counted too, under **Advanced**, until it is known
-how many a normal evening has.
+**Game ping** is the ping the game itself measures, the same number
+Questlog shows. The game asks the server for it every 10 seconds; the
+answer has to wait for the server's program, so this ping includes the
+server's own answer time. The cards' **Ping** does not: it measures how
+fast the server's machine confirms your packets, which stays steady while
+the server's program lags. That is why Questlog can show jumps that Ping
+does not. On a calm evening the game ping was 26–74 ms while the network
+itself stayed at 17 ms, so its jumps came from the server's answers, not
+from the route. On the chart it shows as dots, one per answer.
+
+To get it, the program reads three of the game's messages: the answer to
+its ping, the start of a loading screen, and the server's clock. Every
+other message, chat included, is skipped unread, and only the numbers are
+kept. Game ping, like Server stalls, does not decide the star or the
+recommendation; it tells you how the game felt. Pauses of half a second to
+a second are counted too, under **Advanced**, until it is known how many a
+normal evening has.
 
 A minute counts as having loss when at least half a percent of its packets
 were lost. For the background ping of your normal connection the bar is

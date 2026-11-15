@@ -8,13 +8,15 @@ What changed for users, release by release. Technical details are in
 ### Added
 - **The game's own ping for AION 2**: the program now reads the game's
   ping replies, the same ping Questlog shows, and records it for every
-  10-second ping of the game. On a calm evening it was 26–74 ms while the
-  network itself stayed at 17 ms, so the jumps come from the server's
-  answer, not from the route. Only three of the game's messages are read
-  (ping reply, loading screen, server clock); everything else, chat
-  included, is skipped unread and nothing but numbers is kept.
+  10-second ping of the game: **Game ping** on every card, and dots on
+  the chart. On a calm evening it was 26–74 ms while the network itself
+  stayed at 17 ms, so the jumps come from the server's answer, not from
+  the route. Only three of the game's messages are read (ping reply,
+  loading screen, server clock); everything else, chat included, is
+  skipped unread and nothing but numbers is kept.
 - **Loading screens are no longer server stalls**: a pause in the server's
-  data when you enter a map or an instance is counted apart.
+  data when you enter a map or an instance is counted apart, and marked
+  in grey on the chart.
 - **Server stalls**: the program now notices when the game server stops
   sending for a second or more while the connection itself keeps
   answering — the lag many players feel at once, which loses no packet and

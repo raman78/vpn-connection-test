@@ -432,6 +432,9 @@ class PathCard:
     stall_minutes: int = 0
     lossy_minutes: int = 0     # judged minutes with noticeable loss (shown as "Packet loss")
     lost_packets: int = 0      # remote retransmissions
+    game_ping_ms: float | None = None    # the game's own ping, median; None: not measured
+    game_spikes_ms: float | None = None  # its p95 minus median
+    game_pings: int = 0
     best: bool = False
     best_reason: str = ""
 
@@ -499,7 +502,8 @@ def path_cards(paths: dict[str, Group]) -> list[PathCard]:
             loss_pct(g), judged, len(g.judged_sessions), judged >= REC_MIN_SERVER_MINUTES,
             100.0 * g.spiky_minutes / g.ping_minutes if g.ping_minutes else None, g.ping_minutes,
             tuple(sorted(m.partition(" [")[2].rstrip("]") for m in g.members if m != path)),
-            g.stalls_per_hour, g.stall_max_s, g.stall_minutes, g.bad_minutes, g.retrans))
+            g.stalls_per_hour, g.stall_max_s, g.stall_minutes, g.bad_minutes, g.retrans,
+            g.game_ping_ms, g.game_spikes_ms, len(g.game_pings)))
     rank = lambda c: _LEVEL_RANK[c.jumpy_level]
     ranked = sorted((c for c in cards if c.enough), key=card_rank)
     if len(ranked) >= 2:
