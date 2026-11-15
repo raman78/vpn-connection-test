@@ -37,6 +37,7 @@ inputs; AION 2 is only the first case.
                     ▼
              CaptureManager ── one pipeline per captured connection:
                dumpcap -s 96 -f <its 4-tuple> -w -  │ pipe │  tshark -r - (TCP analysis)
+               game port (§4a): -s 0 ──► aion2 decoder ──► game_ping.csv
                     │
                     ▼ per minute, per connection
                losses.csv                     events.log ◄── every decision above
@@ -138,11 +139,17 @@ for `vpnct-gui` alone); the measuring is done by `ss`, `ip`,
    second, at most about one second of a new connection is now missed.
    Once captured, a connection stays captured until it closes or its
    address disappears.
-7. **Keep the captures in step** (§4) and write any finished minutes.
+7. **Keep the captures in step** (§4), then take the decoded games' pings
+   and map entries (`CaptureManager.take_game`: `game_ping.csv`, `loading`
+   and `decode` events, §4a), then write any finished minutes. The order
+   matters: `take_rows` lets go of stopped pipelines, and the last pings of
+   a connection that just closed are still in its pipeline.
 
 ## 4. Counting loss from headers
 
-Per captured connection, one pipeline:
+Per captured connection, one pipeline (a decoded game connection differs
+in two settings, described in §4a: whole packets, and the payload printed
+for the decoder):
 
 ```
 dumpcap -q -i <iface> -s 96 -f "host R and tcp port P and tcp port L" -w -  |  tshark -l -n -r - -T fields ...
@@ -255,14 +262,18 @@ the longest gap in the server's data, not the kernel's RTT, not the
 lateness of the server's frames. The game's ping is the server program's
 answer time, which only the game's own messages carry.
 
-**What is read.** Only a connection whose remote port is in
-`aion2.DEFAULT_PORTS` (13328) is decoded (`capture.decoded`). Its pipeline
-runs dumpcap with `DECODE_SNAPLEN` (whole packets) and tshark with
-`DECODE_FIELDS`, which adds `tcp.seq_raw` and `tcp.payload`. Every other
-connection stays as §4 describes. The payload goes through the same pipe
-into `Pipeline.add`, and from there into `aion2.GameConnection`. It is never
-written anywhere. Of the server's stream, three messages are read; every
-other message, chat included, is stepped over by its length:
+**What is read, and what passes through.** Only a connection whose remote
+port is in `aion2.DEFAULT_PORTS` (13328) is decoded (`capture.decoded`).
+Its pipeline runs dumpcap with `DECODE_SNAPLEN` (whole packets) and tshark
+with `DECODE_FIELDS`, which adds `tcp.seq_raw` and `tcp.payload`. Every
+other connection stays as §4 describes. The payload goes through the same
+pipe into `Pipeline.add`, and from there into `aion2.GameConnection`. It is
+never written anywhere. Our own packets on that connection pass through the
+same way, because tshark prints the payload of every packet. That includes
+what the player types. Of those, only the length is used, to find the ping
+request (`REQUEST_LEN`), and the bytes are dropped with the line. Of the
+server's stream, three messages are read; every other message, chat
+included, is stepped over by its length:
 
 | Message | Opcode | Read | Used for |
 |---|---|---|---|

@@ -58,8 +58,9 @@ AION 2. Nothing in it is specific to that game or that VPN.
   server's messages the program reads three: the reply to the game's ping,
   the start of a loading screen, and the server's clock. That gives the
   ping the game itself measures, the one Questlog shows. Every other
-  message, chat included, is skipped by its length without being read, and
-  only the resulting numbers are kept. No other program's connection is
+  message, chat included, is skipped by its length without being read. Of
+  your own packets to the game, which pass through too, only their length
+  is used. Only the resulting numbers are kept. No other program's connection is
   read this way.
 - **Only numbers are kept**: per-second and per-minute figures, ping
   results and route hops, as plain files in
