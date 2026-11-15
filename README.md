@@ -53,6 +53,14 @@ AION 2. Nothing in it is specific to that game or that VPN.
   on most packets the first few dozen bytes of what they carry. They go
   through a pipe to the counting tool, which reads only the packet numbers
   from them, and are never written anywhere.
+- **AION 2 is the one exception, and it reads three messages.** For the
+  game's own connection, whole packets go through the same pipe. From the
+  server's messages the program reads three: the reply to the game's ping,
+  the start of a loading screen, and the server's clock. That gives the
+  ping the game itself measures, the one Questlog shows. Every other
+  message, chat included, is skipped by its length without being read, and
+  only the resulting numbers are kept. No other program's connection is
+  read this way.
 - **Only numbers are kept**: per-second and per-minute figures, ping
   results and route hops, as plain files in
   `~/.local/share/vpn-connection-test/sessions/`.

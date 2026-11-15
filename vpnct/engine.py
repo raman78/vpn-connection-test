@@ -99,6 +99,23 @@ class MinutePoint:
     stall_max_s: float = 0.0
     silent: int = 0          # such pauses with nothing at all coming back
     stalls_short: int = 0    # pauses from capture.STALL_SHORT_S up to STALL_MIN_S, link answering
+    stalls_loading: int = 0  # stalls at a map entry (a loading screen), not in stalls
+    map_entries: int = 0
+    game_pings: int = 0      # the game's own ping replies (decoded AION 2 connections)
+    game_ping_ms: float | None = None
+    game_ping_max_ms: float | None = None
+
+
+@dataclass
+class GamePingPoint:
+    """One reply to the game's own ping, for a live chart."""
+    time: float
+    program: str
+    port: int
+    host: str
+    local_port: int
+    path: str
+    ping_ms: float
 
 
 @dataclass
@@ -249,6 +266,7 @@ class Engine:
         with self._lock:
             self._updates += points
         self.captures.update(wanted, now)
+        self._write_game(*self.captures.take_game())     # before take_rows lets stopped pipelines go
         self._write_minutes(self.captures.take_rows(now))
         self.monitors.update(monitor_wanted, now)
         self._write_monitor(self.monitors.take_rows(now))
@@ -288,6 +306,23 @@ class Engine:
             "d_retrans": d.d_retrans, "d_ooopack": d.d_ooopack,
         })
 
+    def _write_game(self, pings: list, maps: list) -> None:
+        points = []
+        for key, at, ms in pings:
+            lip, lport, rip, rport = key
+            program, path = self._key_info.get(key, ("?", None))
+            label = path.label if path is not None else "?"
+            self.session.write("game_ping.csv", {
+                "time": iso(at), "program": program, "local": _ep(lip, lport),
+                "remote": _ep(rip, rport), "path": label, "ping_ms": ms})
+            points.append(GamePingPoint(at, program, rport, rip, lport, label, ms))
+        for key, at, map_id in maps:
+            program, _ = self._key_info.get(key, ("?", None))
+            self._event(at, "loading", f"{program} {_ep(key[2], key[3])}: entering map {map_id}")
+        if points:
+            with self._lock:
+                self._updates += points
+
     def _write_minutes(self, rows: list[MinuteRow]) -> None:
         if not rows:
             return
@@ -301,13 +336,18 @@ class Engine:
                 "lost_gaps": r.lost_gaps, "retrans": r.retrans,
                 "stalls": r.stalls, "stall_s": r.stall_s, "stall_max_s": r.stall_max_s,
                 "silent": r.silent, "stalls_short": r.stalls_short,
+                "stalls_loading": r.stalls_loading, "map_entries": r.map_entries,
+                "game_pings": r.game_pings, "game_ping_ms": r.game_ping_ms,
+                "game_ping_max_ms": r.game_ping_max_ms,
             })
         points = []
         for r in rows:
             program, path = self._key_info.get(r.key, ("?", self.paths.path_for_interface(r.interface)))
             points.append(MinutePoint(r.minute, program, r.key[3], r.key[2], r.key[1], path.label, path.is_vpn,
                                       r.covered_s, r.data_pkts, r.lost_gaps, r.retrans,
-                                      r.stalls, r.stall_s, r.stall_max_s, r.silent, r.stalls_short))
+                                      r.stalls, r.stall_s, r.stall_max_s, r.silent, r.stalls_short,
+                                      r.stalls_loading, r.map_entries, r.game_pings,
+                                      r.game_ping_ms, r.game_ping_max_ms))
         with self._lock:
             self._last_minute = rows
             self._updates += points

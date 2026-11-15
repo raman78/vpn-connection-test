@@ -2,7 +2,9 @@
 
 Every recording gets its own directory under
 `$XDG_DATA_HOME/vpn-connection-test/sessions/<YYYY-MM-DD_HHMMSS>/` holding
-CSV files of numbers and an event log. No packet content is ever written.
+CSV files of numbers and an event log. No packet content is ever written:
+for a decoded AION 2 connection only the numbers read from its three
+messages (ping, map entry) reach a file.
 Rows are flushed as they are written, so a crash loses at most the current
 line.
 """
@@ -20,7 +22,9 @@ SAMPLES_FIELDS = ["time", "program", "local", "remote", "path", "rtt_ms", "rttva
                   "minrtt_ms", "d_bytes_in", "d_data_segs_in", "d_retrans", "d_ooopack"]
 LOSSES_FIELDS = ["minute", "interface", "path", "program", "local", "remote",
                  "covered_s", "data_pkts", "lost_gaps", "retrans",
-                 "stalls", "stall_s", "stall_max_s", "silent", "stalls_short"]
+                 "stalls", "stall_s", "stall_max_s", "silent", "stalls_short",
+                 "stalls_loading", "map_entries", "game_pings", "game_ping_ms", "game_ping_max_ms"]
+GAME_PING_FIELDS = ["time", "program", "local", "remote", "path", "ping_ms"]
 PROBES_FIELDS = ["time", "target", "role", "bound", "interface", "path", "sent", "received",
                  "loss_pct", "rtt_min", "rtt_avg", "rtt_max", "error"]
 HOPS_FIELDS = ["time", "target", "path", "hop", "address", "sent", "received", "loss_pct",
@@ -34,7 +38,7 @@ ROUTES_FIELDS = ["time", "target", "interface", "path", "trigger", "verdict", "s
 
 FILES = {"samples.csv": SAMPLES_FIELDS, "losses.csv": LOSSES_FIELDS,
          "probes.csv": PROBES_FIELDS, "hops.csv": HOPS_FIELDS, "monitor.csv": MONITOR_FIELDS,
-         "routes.csv": ROUTES_FIELDS}
+         "routes.csv": ROUTES_FIELDS, "game_ping.csv": GAME_PING_FIELDS}
 
 
 def sessions_root() -> Path:

@@ -48,7 +48,8 @@ inputs; AION 2 is only the first case.
 | `vpnct/procs.py` | pid → program name (Wine's Windows paths; Electron's rewritten command lines) |
 | `vpnct/interfaces.py` | interfaces, VPN detection, path labels, route lookup, VPN gateway |
 | `vpnct/tracker.py` | connections over time, per-second deltas, which ones are watched |
-| `vpnct/capture.py` | header-only capture pipelines and per-minute loss counts |
+| `vpnct/capture.py` | capture pipelines (header-only, or whole packets for a decoded game) and per-minute loss counts |
+| `vpnct/games/aion2.py` | AION 2 stream decoder: the game's ping, map entries (§4a) |
 | `vpnct/probes.py` | ping and tracepath, with their outputs parsed |
 | `vpnct/monitor.py` | continuous 1/s ping of the direct path to the busiest servers |
 | `vpnct/session.py` | session directory, CSV files, event log |
@@ -237,6 +238,99 @@ restart mid-minute produces two rows for that minute, one per pipeline.
 A pipeline that dies on its own (`capture ended: <dumpcap/tshark stderr>`)
 is retried after `RETRY_AFTER_S`.
 
+## 4a. The AION 2 decoder
+
+What it answers: the ping the game itself measures, the one Questlog shows,
+and when a loading screen begins. Neither is in packet timing. Measured
+2026-11-14 over 59 of the game's pings, none of the header-only measures
+followed the game's ping (Spearman ±0.2): not the gap before the reply, not
+the longest gap in the server's data, not the kernel's RTT, not the
+lateness of the server's frames. The game's ping is the server program's
+answer time, which only the game's own messages carry.
+
+**What is read.** Only a connection whose remote port is in
+`aion2.DEFAULT_PORTS` (13328) is decoded (`capture.decoded`). Its pipeline
+runs dumpcap with `DECODE_SNAPLEN` (whole packets) and tshark with
+`DECODE_FIELDS`, which adds `tcp.seq_raw` and `tcp.payload`. Every other
+connection stays as §4 describes. The payload goes through the same pipe
+into `Pipeline.add`, and from there into `aion2.GameConnection`. It is never
+written anywhere. Of the server's stream, three messages are read; every
+other message, chat included, is stepped over by its length:
+
+| Message | Opcode | Read | Used for |
+|---|---|---|---|
+| `Ping_RS` | 13827 | `result`, `clientSentTime` | the game's ping |
+| `PrepareEnterMap_NT` | 13857 | `mapId` | loading screens (`loading` event, `stalls_loading`) |
+| `MapFrame_NT` | 13824 | `serverTime` | recognising the stream; not used further yet |
+
+Names, opcodes and the frame format come from Questlog's own decoder, which
+ships in its `app.asar`:
+
+```
+frame   = length:varint  opcode:u16le  body
+length  = frame size + (4 - size of the varint)
+opcode 0xFFFF: bundle, body = raw_size:u32le + LZ4 block of more frames
+```
+
+**Recognition.** `StreamDecoder` reports nothing until `RECOGNISE_AFTER`
+(3) messages in a row decode as one of the known messages with exactly the
+right body length. A stream that only looks framed is therefore never read
+as the game's. After a broken frame it searches byte by byte for two known
+messages in a row (`resyncs`). A stream not recognised within
+`GIVE_UP_BYTES` (256 KB) is given up. Each outcome is a `decode` event, so
+a game update that changes the format shows in the log, with the
+connection still measured from headers. Questlog uses the same rule.
+
+**The game's ping.** `Ping_RS` echoes the game's clock (ms) at the moment it
+sent its request. That clock is not ours: under Wine it differed from the
+wall clock by a constant (−202 ms one day). The echoed value is not in the
+request packet either; the full 12 bytes were searched, measured
+2026-11-15. The request is identified by its size instead: the game's only
+data packet of `REQUEST_LEN` (12) bytes, sent every 10.00 s. Our time of
+that packet minus the echoed clock gives the offset between the two
+clocks. `GameConnection` keeps the median of the last `OFFSET_SAMPLES`
+(15) pairs and reports pings once it has `OFFSET_MIN` (3):
+
+    ping = arrival of Ping_RS − (clientSentTime + offset)
+
+Over 28 pairs the offset varied by ±1.2 ms, which is the game clock's 1 ms
+step, and drifted 1.7 ms over five minutes; the window follows the drift.
+The median is why a wrong pair cannot move it. A reply packed into a
+bundle is still measured (2 of 59 were), because the ping comes from the
+reply's own field and not from pairing.
+
+Pairing by packet sizes alone was tried first. It matched 57 of 59 replies
+to 2 ms; the two bundled replies came out once missing and once as a false
+6.4 s ping, and a false long ping is the case that would claim lag that
+never happened. Separating the stray replies by the server's 50 ms tick
+phase did not help: real replies land on the tick too.
+
+**Verification against Questlog.** On 2026-11-15, 5 minutes of play, the
+same stream went through Questlog's decoder (loaded unchanged from its
+bundle, outside Questlog) and through `StreamDecoder`. Both found the same
+28 ping replies, with identical arrival times, the same 5817
+`MapFrame_NT` and the same 2 map entries. In a second run, the shipped
+commands and `Pipeline` (`dumpcap_command`/`tshark_command` with `decode`)
+reported 13 game pings. They matched Questlog's 13 within 0.28 ms, once a
+constant difference between the two clocks was removed, and matched the
+wire time from the 12-byte request to the reply within 0.43 ms.
+
+**What it showed.** On a calm evening the game's ping was 26–74 ms (median
+28.6) while ICMP to the server was 17 ms throughout. The kernel's RTT read
+about 58 ms, inflated by the server delaying its acknowledgements. The
+game pings every 10 s, so it misses most stalls: two 2 s stalls in ten
+minutes, neither caught. The game ping and stalls (§4) answer different
+questions, and both are kept.
+
+**Loading screens.** On 2026-11-15 the server was quiet for 2.3 s while a
+new instance loaded, and the `PrepareEnterMap_NT` for it came 0.4 s after
+the pause ended. A stall with a map entry from `LOADING_BEFORE_S` (5 s)
+before it began to `LOADING_AFTER_S` (10 s) after it ended is counted in
+`stalls_loading`, not in `stalls`. Because the entry can come after the
+stall, a decoded pipeline closes its minutes `LOADING_AFTER_S` later than
+others. Both windows come from two observed loadings: one with the entry
+0.4 s after the pause, one 6.5 s after.
+
 ## 5. Probes
 
 On the probe thread, so a slow `tracepath` never delays a sample.
@@ -387,7 +481,8 @@ interrupted session keeps everything up to its last second.
 |---|---|---|
 | `session.json` | session | version, start, host, selection, extra targets, periods |
 | `samples.csv` | second × watched connection | time, program, local, remote, path, `rtt_ms`, `rttvar_ms`, `minrtt_ms`, `d_bytes_in`, `d_data_segs_in`, `d_retrans` (our retransmissions), `d_ooopack` (segments that arrived out of order — rises with loss) |
-| `losses.csv` | minute × captured connection | §4; `stalls`, `stall_s`, `stall_max_s`, `silent` since 2026-11-14, `stalls_short` a few hours later (each counted only where its column exists) — older files lack them, and the report counts their minutes as not measured for stalls, never as stall-free |
+| `losses.csv` | minute × captured connection | §4; `stalls`, `stall_s`, `stall_max_s`, `silent` since 2026-11-14, `stalls_short` a few hours later (each counted only where its column exists) — older files lack them, and the report counts their minutes as not measured for stalls, never as stall-free. Since 2026-11-15, for decoded connections (§4a): `stalls_loading`, `map_entries`, `game_pings`, `game_ping_ms` (median), `game_ping_max_ms`; empty for other connections |
+| `game_ping.csv` | reply to the game's own ping (§4a) | time, program, local, remote, path, `ping_ms` |
 | `probes.csv` | ping | time, target, role, bound, interface, path, sent, received, `loss_pct`, `rtt_min/avg/max`, error |
 | `hops.csv` | hop × trace | time, target, path, hop, address, sent, received, `loss_pct`, `rtt_avg`, error |
 | `monitor.csv` | minute × monitored server × direct interface | §5a |
@@ -398,9 +493,10 @@ Event kinds: `start`, `stop`, `watch`, `closed`, `path-change`,
 `counters-reset`, `interfaces`, `capture-start`, `capture-stop`,
 `capture-error`, `monitor-start`, `monitor-stop`, `monitor-error`,
 `watch-loss`, `route`, `probe-error`, `probe-skip`, `trace-error`, `mark`,
-`skip`, `error`.
+`skip`, `decode`, `loading`, `error`.
 
-Addresses and names only; no packet content.
+Addresses, names and numbers only; no packet content. From a decoded
+connection only the numbers of §4a reach a file: ping times and map ids.
 
 ## 8. The report
 
@@ -757,6 +853,8 @@ server).
 | `probe-skip ... public address is not known` | the VPN is not a WireGuard connection in NetworkManager; the Tunnel line (§10) cannot say where jumps start, jumps are still counted |
 | `skip ... not watched, remote address is ...` | a pinned program talks to an address outside the public internet; it is not measured. If it is the program's main connection, the session misses it (§3) |
 | `counters-reset` | a socket was replaced between two samples on the same 4-tuple; rare, harmless |
+| `decode ... not recognised as an AION 2 stream` | the connection on the game's port does not carry the format of §4a. Either it is another program, or a game update changed the format. It is measured from headers only, with no game ping and no loading screens. Compare with Questlog's decoder before changing `vpnct/games/aion2.py` |
+| `decode ... lost the message boundaries` | a broken frame or a capture gap; the decoder found the frames again. Pings in between are missing, not wrong |
 
 ## 12. Tests
 
@@ -764,7 +862,12 @@ server).
 output shapes with documentation addresses. `tests/test_capture.py` runs the
 shipped tshark command on a generated header-only TCP stream with one
 missing and one retransmitted segment, and has dumpcap compile a generated
-filter; both are skipped where those programs are absent. The tracker tests
+filter; both are skipped where those programs are absent. It also runs the
+shipped decode command on a generated whole-packet AION 2 stream and checks
+the game pings that come out. `tests/test_aion2.py` builds frames from the
+format in §4a, with made-up bodies (no captured game content), and covers
+recognition, bundles, resync, retransmissions and the clock offset's
+median. The tracker tests
 use a public resolver address as the remote end, because documentation
 ranges are not global and would — correctly — be filtered out.
 
